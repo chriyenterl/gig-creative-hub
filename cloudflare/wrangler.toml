@@ -1,0 +1,26 @@
+# Cloudflare settings for the GIG Creative Hub server (used by the `wrangler` tool).
+# Deploy from this folder with:  npx wrangler deploy
+
+name = "gig-hub-api"
+main = "worker.js"
+compatibility_date = "2025-09-01"
+
+# Data: talents, links, approvals, usage, print orders…
+[[d1_databases]]
+binding = "DB"
+database_name = "gig-hub"
+database_id = "PASTE-YOUR-D1-DATABASE-ID-HERE"
+
+# Files: photos, videos, brand kit, creator uploads, print artwork
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "gig-hub-files"
+
+[observability]
+enabled = true
+
+# Optional — team email alerts through Resend (resend.com, free plan):
+#   npx wrangler secret put RESEND_API_KEY
+# and, once you've verified your own domain in Resend, set who the emails come from:
+# [vars]
+# MAIL_FROM = "GIG Print Hub <orders@yourdomain.com>"

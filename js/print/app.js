@@ -33,7 +33,7 @@ addEventListener('hashchange', () => { if (takeKeyFromLink()) location.reload();
 const linkFor = (page, key) => new URL(page === 'order' ? 'order.html#' + key : 'index.html#k=' + key, location.href.split('#')[0]).href;
 
 // ── Tiny store ─────────────────────────────────────────────────────────────
-let P = { loaded: false, role: null, questions: [], settings: null, orders: [], botLinked: false, readyMessage: '', newOrderMessage: '', notifyOnDone: true, emailReady: true };
+let P = { loaded: false, role: null, name: '', staff: [], questions: [], settings: null, orders: [], botLinked: false, readyMessage: '', newOrderMessage: '', notifyOnDone: true, emailReady: true };
 const subs = new Set();
 const setP = (patch) => { P = { ...P, ...patch }; subs.forEach((f) => f(P)); };
 function usePrint() {
@@ -590,21 +590,88 @@ function Access() {
   };
   const toggle = (which, active) => act(() => api.print.setActive(getKey(), which, !active), active ? 'Link disabled.' : 'Link enabled.');
   return html`
-    <${PageHead} title="Links & access" sub="Three links: customers place orders, admin works on them, master runs everything." />
-    <div class="access-grid">
+    <${PageHead} title="Links & access" sub="Customers order through one shared link, each staff member has their own link, and master runs everything." />
+    <div class="access-grid access-grid-2">
       <${LinkCard} title="Customer order link" url=${linkFor('order', settings.orderKey)} active=${settings.orderActive} canDisable
         hint="One link for all customers — share it on WhatsApp, your Instagram bio or website. Anyone with it can place an order."
         onToggle=${() => toggle('order', settings.orderActive)} onChange=${() => change('order', 'customer order link')} />
-      <${LinkCard} title="Admin link" url=${linkFor('admin', settings.adminKey)} active=${settings.adminActive} canDisable
-        hint="For production staff: see all orders, move them New → Pending → Completed, add notes, print job sheets. Can't change settings or delete orders."
-        onToggle=${() => toggle('admin', settings.adminActive)} onChange=${() => change('admin', 'admin link')} />
       <${LinkCard} title="Master link" url=${linkFor('master', settings.masterKey)}
-        hint="Full control: everything admin can do, plus the order form, these links, the bot and deleting orders. Your Creative Hub team always has master access."
+        hint="Full control: everything staff can do, plus the order form, these links, the bot and deleting orders. Your Creative Hub team always has master access."
         warn="Keep this one private." onChange=${() => change('master', 'master link')} />
     </div>
+    <${StaffLinks} />
     <${MessagesCard} />
     <${BotCard} />
     <${TeamAlertsCard} />`;
+}
+
+// One private admin link per staff member — no account or password, and each can be turned off on its own.
+function StaffLinks() {
+  const { staff } = usePrint();
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const run = async (fn, msg) => {
+    try { const list = await fn(); setP({ staff: list }); if (msg) toast(msg); return list; } catch (e) { toastError(e); return null; }
+  };
+  const add = async () => {
+    const n = name.trim();
+    if (!n) return toast("Type the person's name first.", 'error');
+    setBusy(true);
+    const before = new Set(staff.map((s) => s.id));
+    const list = await run(() => api.print.staffAdd(getKey(), n));
+    setBusy(false);
+    const made = list?.find((s) => !before.has(s.id));
+    if (!made) return;
+    setName('');
+    await copyText(linkFor('admin', made.key));
+    toast(`Link for ${made.name} created and copied — send it to them.`);
+  };
+  const change = async (s) => {
+    if (!(await confirmDialog({ title: `Change ${s.name}'s link?`, message: 'They get a new link and the old one stops working immediately. Send them the new one.', confirmLabel: 'Change link' }))) return;
+    const list = await run(() => api.print.staffRegenerate(getKey(), s.id));
+    const fresh = list?.find((x) => x.id === s.id);
+    if (fresh) { await copyText(linkFor('admin', fresh.key)); toast(`New link for ${s.name} copied — their old one no longer works.`); }
+  };
+  const toggle = (s) => run(() => api.print.staffUpdate(getKey(), s.id, { active: !s.active }),
+    s.active ? `${s.name}'s link is turned off.` : `${s.name}'s link is on again.`);
+  const rename = (s) => {
+    const n = prompt('Name for this link:', s.name);
+    if (n != null && n.trim() && n.trim() !== s.name) run(() => api.print.staffUpdate(getKey(), s.id, { name: n.trim() }), 'Renamed.');
+  };
+  const remove = async (s) => {
+    if (!(await confirmDialog({ title: `Delete ${s.name}'s link?`, message: 'Their link stops working for good. Their name stays in the history of orders they worked on.', confirmLabel: 'Delete', danger: true }))) return;
+    run(() => api.print.staffDelete(getKey(), s.id), `${s.name}'s link is deleted.`);
+  };
+  return html`<section class="card staff-card">
+    <header class="card-head"><h2>Staff links</h2><${Pill} tone="neutral">${staff.length} ${staff.length === 1 ? 'person' : 'people'}<//></header>
+    <p class="muted small">Give each staff member their own link — no account or password. They open it and go straight to the orders:
+      move them New → Pending → Completed, add notes and print job sheets (they can't change settings or delete orders).
+      Turn off or change one person's link without affecting anyone else. Order history shows who did what.</p>
+    <div class="inline-form staff-add">
+      <input value=${name} maxlength="60" placeholder="Their name, e.g. Ali (production)" aria-label="Staff member's name"
+        onInput=${(e) => setName(e.target.value)} onKeyDown=${(e) => { if (e.key === 'Enter') add(); }} />
+      <button class="btn btn-primary" disabled=${busy} onClick=${add}><${Icon} name="plus" size=${16} />Create link</button>
+    </div>
+    ${staff.length ? html`<ul class="staff-list">${staff.map((s) => {
+      const url = linkFor('admin', s.key);
+      return html`<li key=${s.id} class=${s.active ? '' : 'inactive'}>
+        <div class="staff-top">
+          <b>${s.name}</b><${Pill} tone=${s.active ? 'good' : 'neutral'}>${s.active ? 'Active' : 'Off'}<//>
+          <span class="muted small staff-used">${s.last_used_at ? 'Last opened ' + timeAgo(s.last_used_at) : 'Not opened yet'}</span>
+        </div>
+        <div class="url-box">
+          <code>${s.active ? url : url.replace(/(#k=)[^#]*$/, '$1' + '•'.repeat(12))}</code>
+          <button class="btn btn-sm" disabled=${!s.active} onClick=${async () => { await copyText(url); toast(`${s.name}'s link copied.`); }}><${Icon} name="copy" size=${14} />Copy</button>
+        </div>
+        <div class="page-actions">
+          <button class="btn btn-sm" onClick=${() => toggle(s)}><${Icon} name=${s.active ? 'pause' : 'power'} size=${14} />${s.active ? 'Turn off' : 'Turn on'}</button>
+          <button class="btn btn-sm" onClick=${() => change(s)}><${Icon} name="refresh" size=${14} />Change link</button>
+          <button class="btn btn-sm btn-ghost" onClick=${() => rename(s)}><${Icon} name="edit" size=${14} />Rename</button>
+          <button class="btn btn-sm btn-ghost-danger" onClick=${() => remove(s)}><${Icon} name="trash" size=${14} />Delete</button>
+        </div>
+      </li>`;
+    })}</ul>` : html`<p class="muted small">No staff links yet — type a name above to create the first one.</p>`}
+  </section>`;
 }
 
 // ── Shell ──────────────────────────────────────────────────────────────────
@@ -691,8 +758,8 @@ function Shell() {
         <${InstallButton} appName=${PRINT_TITLE} />
         <${AlertToggle} />
         ${viaHub && html`<a class="nav-item" href="../index.html"><${Icon} name="back" /><span>Back to Creative Hub</span></a>`}
-        <div class="user-chip"><span class="avatar">${master ? 'M' : 'A'}</span>
-          <span class="user-email">${master ? 'Master access' : 'Admin access'}</span>
+        <div class="user-chip"><span class="avatar">${master ? 'M' : (P.name || 'A').trim().charAt(0).toUpperCase()}</span>
+          <span class="user-email">${master ? 'Master access' : `${P.name || 'Staff'} · Admin`}</span>
           ${!viaHub && html`<button class="icon-btn" data-tip="Forget this link on this device" aria-label="Forget this link"
             onClick=${() => { setKey(null); location.reload(); }}><${Icon} name="logout" size=${16} /></button>`}
         </div>
@@ -732,7 +799,7 @@ function App() {
       try {
         const me = await api.print.me(getKey());
         const orders = await api.print.orders(getKey());
-        setP({ loaded: true, role: me.role, questions: me.questions, settings: me.settings || null, botLinked: !!me.settings?.webhookUrl || !!me.botLinked,
+        setP({ loaded: true, role: me.role, name: me.name || '', staff: me.staff || [], questions: me.questions, settings: me.settings || null, botLinked: !!me.settings?.webhookUrl || !!me.botLinked,
                readyMessage: me.settings?.readyMessage || me.readyMessage || '', newOrderMessage: me.settings?.newOrderMessage || me.newOrderMessage || '',
                notifyOnDone: me.notifyOnDone !== false, emailReady: me.emailReady !== false, storage: me.storage || null,
                orders: orders.sort(byNewest) });

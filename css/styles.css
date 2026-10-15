@@ -732,6 +732,14 @@ select {
 .access-card { display: flex; flex-direction: column; gap: 10px; }
 .access-card .page-actions { margin-top: auto; }
 .access-card.inactive { background: var(--surface-2); }
+.access-grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.staff-card { margin-bottom: 14px; }
+.staff-add input { flex: 1 1 240px; }
+.staff-list { list-style: none; margin: 4px 0 0; padding: 0; }
+.staff-list > li { display: flex; flex-direction: column; gap: 8px; padding: 14px 0; border-top: 1px solid var(--line); }
+.staff-list > li.inactive code { opacity: .55; }
+.staff-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.staff-used { margin-left: auto; }
 .warn-text { color: var(--serious-ink); display: flex; gap: 6px; align-items: center; margin: 0; }
 .msg-preview { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; margin-bottom: 12px; border-radius: 14px 14px 14px 4px; background: #dcf8c6; color: #111; max-width: 520px; }
 .msg-preview .muted { color: #56704a; }

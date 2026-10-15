@@ -142,11 +142,15 @@ Open it from the Creative Hub sidebar (**Print Hub**). Anyone signed in to the h
 | Link | For | Can do |
 |---|---|---|
 | **Customer order link** — `print/order.html#…` | All customers (one shared link) | Fill in the order form, attach artwork, submit, get an order number |
-| **Admin link** — `print/index.html#k=…` | Production staff | See all orders, move them New → Pending → Completed, notes, job sheets |
+| **Staff links** — `print/index.html#k=…` | Production staff — **one link per person** | See all orders, move them New → Pending → Completed, notes, job sheets |
 | **Master link** — `print/index.html#k=…` | You | Everything, plus: edit the order form, links & bot settings, delete orders |
 
-All three are in **Print Hub → Links & access** (master). Each can be copied, **changed** (the old one stops working
-immediately) and — except master — **disabled**. A link is remembered on the device it's opened on; "Forget this link" signs it out.
+All of them are in **Print Hub → Links & access** (master). **Staff links:** type a person's name and click **Create link** —
+the link is copied, ready to send. They don't need an account or password: they open the link and go straight to the orders,
+their name shows in the menu ("Ali · Admin"), and order history records who moved each order ("by Ali"). Each person's link
+can be **turned off**, **changed** (their old one stops working immediately), **renamed** or **deleted** without affecting
+anyone else, and you can see when it was last opened. The customer link can be changed or disabled; the master link can be
+changed. A link is remembered on the device it's opened on; "Forget this link" signs it out.
 
 **Order form:** **Order form** page (master). The default form asks: name, company, phone/WhatsApp, what to print, quantity,
 **size**, **paper type** (hard card / normal / not sure), **lamination** (only shown when the item isn't stickers or a banner),

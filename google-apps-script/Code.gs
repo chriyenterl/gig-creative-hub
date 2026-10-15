@@ -636,7 +636,7 @@ function linkSubmissions_(token) {
 //
 //  Links (all changeable by master):
 //    customer order link  → print/order.html#<orderKey>   (one shared link)
-//    admin link           → print/index.html#k=<adminKey>
+//    staff (admin) links  → print/index.html#k=<key>   (one per person)
 //    master link          → print/index.html#k=<masterKey>
 //  Anyone signed in to the Creative Hub is treated as master.
 // ════════════════════════════════════════════════════════════════════════════
@@ -686,7 +686,7 @@ function printSettings_() {
   var props = PropertiesService.getScriptProperties();
   var s = JSON.parse(props.getProperty('PRINT_SETTINGS') || 'null');
   if (!s) {
-    s = { masterKey: newKey_(), adminKey: newKey_(), orderKey: newKey_(), orderActive: true, adminActive: true, nextNo: 1001,
+    s = { masterKey: newKey_(), orderKey: newKey_(), orderActive: true, nextNo: 1001,
           webhookUrl: '', webhookSecret: '', readyMessage: DEFAULT_READY_MESSAGE };
     props.setProperty('PRINT_SETTINGS', JSON.stringify(s));
   }
@@ -695,7 +695,35 @@ function printSettings_() {
   if (s.notifyOnNew === undefined) s.notifyOnNew = true;
   if (s.notifyOnDone === undefined) s.notifyOnDone = true;
   if (s.teamEmails === undefined) { s.teamEmails = ''; s.teamEmailOn = false; s.siteUrl = ''; }
+  if (s.adminKey) { // older versions had one shared admin link — keep it working as a staff link
+    var staff = printStaff_();
+    if (!staff.some(function (x) { return x.key === s.adminKey; })) {
+      staff.push({ id: Utilities.getUuid(), name: 'Shared admin link', key: s.adminKey, active: s.adminActive !== false, last_used_at: null, created_at: new Date().toISOString() });
+      savePrintStaff_(staff);
+    }
+    delete s.adminKey; delete s.adminActive;
+    props.setProperty('PRINT_SETTINGS', JSON.stringify(s));
+  }
   return s;
+}
+// Staff links: one private admin link per person, no account needed.
+function printStaff_() { return JSON.parse(PropertiesService.getScriptProperties().getProperty('PRINT_STAFF') || '[]'); }
+function savePrintStaff_(list) { PropertiesService.getScriptProperties().setProperty('PRINT_STAFF', JSON.stringify(list)); }
+function staffOut_() {
+  return printStaff_().map(function (x) { return { id: x.id, name: x.name, key: x.key, active: x.active, last_used_at: x.last_used_at || null, created_at: x.created_at }; });
+}
+function staffName_(n) {
+  n = String(n || '').trim().slice(0, 60);
+  if (!n) fail_("Type the person's name.");
+  return n;
+}
+function staffChange_(id, fn) {
+  var list = printStaff_();
+  var x = list.filter(function (y) { return y.id === id; })[0];
+  if (!x) fail_('That link no longer exists.');
+  fn(x, list);
+  savePrintStaff_(list);
+  return staffOut_();
 }
 function savePrintSettings_(s) { PropertiesService.getScriptProperties().setProperty('PRINT_SETTINGS', JSON.stringify(s)); }
 function printQuestions_() {
@@ -704,11 +732,20 @@ function printQuestions_() {
 }
 function printOrderKeyOk_(key) { var s = printSettings_(); return !!(s.orderActive && key && key === s.orderKey); }
 
-function printRole_(req) {
+// Who is using the Print Hub: the master link, one person's staff link, or someone signed in to the Creative Hub.
+function printActor_(req) {
   var s = printSettings_();
-  if (req.printKey && req.printKey === s.masterKey) return 'master';
-  if (req.printKey && s.adminActive && req.printKey === s.adminKey) return 'admin';
-  if (req.token) { verify_(req.token); return 'master'; }
+  if (req.printKey && req.printKey === s.masterKey) return { role: 'master', who: 'Master' };
+  if (req.printKey) {
+    var st = printStaff_().filter(function (x) { return x.key === req.printKey && x.active; })[0];
+    if (st) {
+      if (!st.last_used_at || Date.now() - new Date(st.last_used_at).getTime() > 3600000) {
+        withLock_(function () { staffChange_(st.id, function (x) { x.last_used_at = new Date().toISOString(); }); });
+      }
+      return { role: 'admin', who: st.name || 'Admin' };
+    }
+  }
+  if (req.token) { var m = verify_(req.token); return { role: 'master', who: m.name || m.email }; }
   fail_('This access link is no longer valid. Please ask for a new one.', 'PRINT_AUTH');
 }
 
@@ -733,20 +770,40 @@ function printRoute_(req) {
     return { order_no: created.order_no };
   }
 
-  // ── Admin & master ──
-  var role = printRole_(req);
-  var master = role === 'master';
-  var needMaster = function () { if (!master) fail_('Only the master link can do that.'); };
+  // ── Staff (admin) & master ──
+  var actor = printActor_(req);
+  var needMaster = function () { if (actor.role !== 'master') fail_('Only the master link can do that.'); };
   switch (a) {
-    case 'printMe': return printMe_(role);
+    case 'printMe': return printMe_(actor);
     case 'printOrders': return readTable_('print_orders').rows;
-    case 'printUpdate': return withLock_(function () { return printUpdate_(role, req.id, req.patch || {}); });
-    case 'printNotify': return withLock_(function () { return printNotifyAgain_(role, req.id, req.kind); });
+    case 'printUpdate': return withLock_(function () { return printUpdate_(actor, req.id, req.patch || {}); });
+    case 'printNotify': return withLock_(function () { return printNotifyAgain_(req.id, req.kind); });
     case 'printDelete': needMaster(); return withLock_(function () { return printDelete_(req.id); });
     case 'printSaveQuestions': needMaster(); return printSaveQuestions_(req.questions);
     case 'printSaveSettings': needMaster(); return withLock_(function () { return printSaveSettings_(req.settings || {}); });
     case 'printRegenerate': needMaster(); return withLock_(function () { return printRegenerate_(req.which); });
     case 'printSetActive': needMaster(); return withLock_(function () { return printSetActive_(req.which, !!req.active); });
+    case 'printStaffAdd': needMaster(); return withLock_(function () {
+      var list = printStaff_();
+      if (list.length >= 100) fail_('You can have up to 100 staff links.');
+      list.push({ id: Utilities.getUuid(), name: staffName_(req.name), key: newKey_(), active: true, last_used_at: null, created_at: new Date().toISOString() });
+      savePrintStaff_(list);
+      return staffOut_();
+    });
+    case 'printStaffUpdate': needMaster(); return withLock_(function () {
+      var patch = req.patch || {};
+      return staffChange_(req.id, function (x) {
+        if (patch.name !== undefined) x.name = staffName_(patch.name);
+        if (patch.active !== undefined) x.active = !!patch.active;
+      });
+    });
+    case 'printStaffRegenerate': needMaster(); return withLock_(function () {
+      return staffChange_(req.id, function (x) { x.key = newKey_(); x.last_used_at = null; });
+    });
+    case 'printStaffDelete': needMaster(); return withLock_(function () {
+      savePrintStaff_(printStaff_().filter(function (x) { return x.id !== req.id; }));
+      return staffOut_();
+    });
     case 'printTestNotify': needMaster(); return printTestNotify_(req.kind);
     case 'printTestTeamEmail': needMaster(); return teamEmail_({ order_no: 'P-TEST', customer_name: 'Test Customer', company: 'Test Co',
       phone: '+60123456789', summary: 'Flyers', quantity: '500', due_date: null, answers: [], id: '' }, true);
@@ -754,12 +811,14 @@ function printRoute_(req) {
   fail_('Unknown action: ' + a);
 }
 
-function printMe_(role) {
+function printMe_(actor) {
   var s = printSettings_();
-  var out = { role: role, questions: printQuestions_(), botLinked: !!s.webhookUrl, readyMessage: s.readyMessage,
+  var role = actor.role;
+  var out = { role: role, name: actor.who, questions: printQuestions_(), botLinked: !!s.webhookUrl, readyMessage: s.readyMessage,
               newOrderMessage: s.newOrderMessage, notifyOnDone: s.notifyOnDone };
   if (role === 'master') {
-    out.settings = { masterKey: s.masterKey, adminKey: s.adminKey, orderKey: s.orderKey, orderActive: s.orderActive, adminActive: s.adminActive,
+    out.staff = staffOut_();
+    out.settings = { masterKey: s.masterKey, orderKey: s.orderKey, orderActive: s.orderActive,
                      webhookUrl: s.webhookUrl, webhookSecret: s.webhookSecret, readyMessage: s.readyMessage,
                      newOrderMessage: s.newOrderMessage, notifyOnNew: s.notifyOnNew, notifyOnDone: s.notifyOnDone,
                      teamEmails: s.teamEmails, teamEmailOn: s.teamEmailOn };
@@ -820,26 +879,26 @@ function findOrder_(id) {
   return o;
 }
 
-function printUpdate_(role, id, patch) {
+function printUpdate_(actor, id, patch) {
   var o = findOrder_(id);
   var p = {};
   var history = o.history || [];
   if (patch.status && PRINT_STATUSES.indexOf(patch.status) >= 0 && patch.status !== o.status) {
     p.status = patch.status;
-    history.push({ status: patch.status, at: new Date().toISOString(), by: role });
+    history.push({ status: patch.status, at: new Date().toISOString(), by: actor.who });
     var ps = printSettings_();
     if (patch.status === 'completed' && patch.notify !== false && ps.webhookUrl && ps.notifyOnDone) history.push(notify_('completed', o, false));
     p.history = history;
   }
   if (patch.whatsapp) { // staff opened WhatsApp with a message for the customer
-    history.push({ event: 'whatsapp', kind: patch.whatsapp === 'created' ? 'created' : 'completed', at: new Date().toISOString(), by: role });
+    history.push({ event: 'whatsapp', kind: patch.whatsapp === 'created' ? 'created' : 'completed', at: new Date().toISOString(), by: actor.who });
     p.history = history;
   }
   if (patch.internal_notes !== undefined) p.internal_notes = String(patch.internal_notes || '').slice(0, 20000) || null;
   return updateRow_('print_orders', id, p);
 }
 
-function printNotifyAgain_(role, id, kind) {
+function printNotifyAgain_(id, kind) {
   var o = findOrder_(id);
   var history = o.history || [];
   history.push(notify_(kind === 'created' ? 'created' : 'completed', o, false));
@@ -896,25 +955,25 @@ function printSaveSettings_(input) {
   if (input.teamEmailOn !== undefined) s.teamEmailOn = !!input.teamEmailOn;
   if (input.siteUrl && /^https?:\/\//.test(input.siteUrl)) s.siteUrl = String(input.siteUrl).split('#')[0];
   savePrintSettings_(s);
-  return printMe_('master').settings;
+  return printMe_({ role: 'master' }).settings;
 }
 
 function printRegenerate_(which) {
   var s = printSettings_();
-  var field = { order: 'orderKey', admin: 'adminKey', master: 'masterKey' }[which];
-  if (!field) fail_('Unknown link.');
+  var field = { order: 'orderKey', master: 'masterKey' }[which];
+  if (!field) fail_(which === 'admin' ? 'Admin links are per person now — use Staff links.' : 'Unknown link.');
   s[field] = newKey_();
   savePrintSettings_(s);
-  return printMe_('master').settings;
+  return printMe_({ role: 'master' }).settings;
 }
 
 function printSetActive_(which, active) {
   var s = printSettings_();
-  var field = { order: 'orderActive', admin: 'adminActive' }[which];
+  var field = { order: 'orderActive' }[which];
   if (!field) fail_('That link can\'t be turned off.');
   s[field] = active;
   savePrintSettings_(s);
-  return printMe_('master').settings;
+  return printMe_({ role: 'master' }).settings;
 }
 
 // ── Bot notifications: "order.created" (new order) and "order.completed" ──

@@ -240,9 +240,14 @@ function printSeed() {
   return {
     v: 4,
     // Fixed demo links, so the customer link also works in a private window or another browser on this computer.
-    settings: { masterKey: 'demomasterlink', adminKey: 'demoadminlink', orderKey: 'demoorderlink', orderActive: true, adminActive: true, nextNo: 1006,
+    settings: { masterKey: 'demomasterlink', orderKey: 'demoorderlink', orderActive: true, nextNo: 1006,
                 webhookUrl: '', webhookSecret: '', readyMessage: DEFAULT_READY_MESSAGE, newOrderMessage: DEFAULT_NEW_MESSAGE,
                 notifyOnNew: true, notifyOnDone: true, teamEmails: '', teamEmailOn: false, siteUrl: '' },
+    // One private admin link per staff member.
+    staff: [
+      { id: uid(), name: 'Production team', key: 'demoadminlink', active: true, last_used_at: ago(2), created_at: ago(400) },
+      { id: uid(), name: 'Ali', key: 'demoalilink', active: true, last_used_at: null, created_at: ago(30) },
+    ],
     questions: DEFAULT_QUESTIONS,
     orders: [
       order('P-1005', 'new', ['Siti Mariam', '', '+60 12-555 0199', 'Posters', 20, inDays(7), 'A2', 'Normal paper', 'Yes', 'Hari Raya sale poster, green and gold, with our logo at the top'], 3, []),
@@ -397,20 +402,41 @@ export function createDemoBackend() {
       let pdb = null;
       const pload = () => {
         if (pdb) return pdb;
-        try { const x = JSON.parse(localStorage.getItem(PRINT_KEY)); if (x && x.v === 4) return (pdb = x); } catch {}
+        try {
+          const x = JSON.parse(localStorage.getItem(PRINT_KEY));
+          if (x && x.v === 4) {
+            if (!x.staff) { // saved before per-person links: the old shared admin link becomes one
+              x.staff = [{ id: uid(), name: 'Production team', key: x.settings.adminKey || 'demoadminlink', active: x.settings.adminActive !== false,
+                           last_used_at: null, created_at: new Date().toISOString() }];
+              delete x.settings.adminKey; delete x.settings.adminActive;
+              pdb = x;
+              psave();
+            }
+            return (pdb = x);
+          }
+        } catch {}
         pdb = printSeed();
         psave(); // save right away so the customer page and staff app share the same links
         return pdb;
       };
       const psave = () => { try { localStorage.setItem(PRINT_KEY, JSON.stringify(pdb)); } catch {} };
-      const role = (key) => {
-        const st = pload().settings;
-        if (!key) return 'master'; // demo: everyone coming from the hub is on the team
-        if (key === st.masterKey) return 'master';
-        if (key === st.adminKey && st.adminActive) return 'admin';
+      // Who is using the Print Hub: the master link, one person's staff link, or the hub's team (master).
+      const actor = (key) => {
+        const d = pload();
+        if (!key) return { role: 'master', who: 'Demo user' }; // demo: everyone coming from the hub is on the team
+        if (key === d.settings.masterKey) return { role: 'master', who: 'Master' };
+        const st = d.staff.find((x) => x.key === key && x.active);
+        if (st) {
+          if (!st.last_used_at || Date.now() - new Date(st.last_used_at) > 3600e3) { st.last_used_at = new Date().toISOString(); psave(); }
+          return { role: 'admin', who: st.name };
+        }
         const e = new Error('This access link is no longer valid. Please ask for a new one.'); e.code = 'PRINT_AUTH'; throw e;
       };
+      const role = (key) => actor(key).role;
       const needMaster = (key) => { if (role(key) !== 'master') throw new Error('Only the master link can do that.'); };
+      const staffOut = () => clone(pload().staff);
+      const staffName = (n) => { n = String(n || '').trim().slice(0, 60); if (!n) throw new Error("Type the person's name."); return n; };
+      const staffFind = (id) => { const x = pload().staff.find((s) => s.id === id); if (!x) throw new Error('That link no longer exists.'); return x; };
       const orderOk = (k) => pload().settings.orderActive && k === pload().settings.orderKey;
       const settingsOut = () => { const { nextNo, wa, ...rest } = pload().settings; return { teamEmails: '', teamEmailOn: false, ...rest }; };
       // Demo stand-in for the team email alert (nothing is really sent).
@@ -477,16 +503,17 @@ export function createDemoBackend() {
         },
         async me(key) {
           await wait();
-          const r = role(key);
+          const a = actor(key);
+          const r = a.role;
           const st = pload().settings;
-          return { role: r, questions: clone(pload().questions), botLinked: !!st.webhookUrl, readyMessage: st.readyMessage,
+          return { role: r, name: a.who, questions: clone(pload().questions), botLinked: !!st.webhookUrl, readyMessage: st.readyMessage,
                    newOrderMessage: st.newOrderMessage, notifyOnDone: st.notifyOnDone, storage: demoStorage(),
-                   ...(r === 'master' ? { settings: settingsOut() } : {}) };
+                   ...(r === 'master' ? { settings: settingsOut(), staff: staffOut() } : {}) };
         },
         async orders(key) { await wait(); role(key); return clone(pload().orders); },
         async update(key, id, patch) {
           await wait();
-          const r = role(key);
+          const r = actor(key).who;
           const o = find(id);
           if (patch.status && patch.status !== o.status) {
             o.history = [...(o.history || []), { status: patch.status, at: new Date().toISOString(), by: r }];
@@ -552,15 +579,44 @@ export function createDemoBackend() {
         },
         async regenerate(key, which) {
           needMaster(key);
-          pload().settings[{ order: 'orderKey', admin: 'adminKey', master: 'masterKey' }[which]] = newToken();
+          const field = { order: 'orderKey', master: 'masterKey' }[which];
+          if (!field) throw new Error('Admin links are per person now — use Staff links.');
+          pload().settings[field] = newToken();
           psave();
           return settingsOut();
         },
         async setActive(key, which, active) {
           needMaster(key);
-          pload().settings[{ order: 'orderActive', admin: 'adminActive' }[which]] = !!active;
+          if (which !== 'order') throw new Error("That link can't be turned off.");
+          pload().settings.orderActive = !!active;
           psave();
           return settingsOut();
+        },
+        async staffAdd(key, name) {
+          needMaster(key);
+          pload().staff.push({ id: uid(), name: staffName(name), key: newToken(), active: true, last_used_at: null, created_at: new Date().toISOString() });
+          psave();
+          return staffOut();
+        },
+        async staffUpdate(key, id, patch) {
+          needMaster(key);
+          const x = staffFind(id);
+          if (patch.name !== undefined) x.name = staffName(patch.name);
+          if (patch.active !== undefined) x.active = !!patch.active;
+          psave();
+          return staffOut();
+        },
+        async staffRegenerate(key, id) {
+          needMaster(key);
+          Object.assign(staffFind(id), { key: newToken(), last_used_at: null });
+          psave();
+          return staffOut();
+        },
+        async staffDelete(key, id) {
+          needMaster(key);
+          pload().staff = pload().staff.filter((s) => s.id !== id);
+          psave();
+          return staffOut();
         },
         async testNotify(key, kind) {
           needMaster(key);

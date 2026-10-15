@@ -23,7 +23,7 @@
 const TOKEN_DAYS = 30;           // how long a team login lasts
 const PBKDF2_ROUNDS = 20000;     // password hashing strength (kept modest for the free plan's CPU limit)
 const CHUNK = 10 * 1024 * 1024;  // upload part size — big files are sent in pieces of this size
-const SCHEMA_V = '1';            // bump when SCHEMA changes so new columns get added
+const SCHEMA_V = '2';            // bump when SCHEMA changes so new columns get added
 const GB = 1e9;                  // storage is counted the way Cloudflare bills it (1 GB = 1,000,000,000 bytes)
 const DEFAULT_LIMIT_GB = 10;     // uploads stop here (R2's free allowance) — change it in Settings
 
@@ -46,6 +46,7 @@ const SCHEMA = {
   print_orders: { cols: ['id', 'order_no', 'status', 'customer_name', 'company', 'phone', 'email', 'summary', 'quantity',
                          'due_date', 'answers', 'history', 'internal_notes', 'created_at', 'updated_at'],
                   json: ['answers', 'history'] },
+  print_staff:  { cols: ['id', 'name', 'link_key', 'is_active', 'last_used_at', 'created_at'], bool: ['is_active'] },
 };
 
 const DEFAULTS = {
@@ -56,6 +57,7 @@ const DEFAULTS = {
   assets:       { category: 'final', media_type: 'other', source: 'team', tags: [], status: 'pending', use_count: 0 },
   asset_usage:  {},
   print_orders: { status: 'new', history: [] },
+  print_staff:  { is_active: true },
 };
 
 const INDEXES = [
@@ -64,6 +66,7 @@ const INDEXES = [
   'CREATE INDEX IF NOT EXISTS assets_link ON assets (upload_link_id)',
   'CREATE INDEX IF NOT EXISTS assets_path ON assets (storage_path)',
   'CREATE INDEX IF NOT EXISTS usage_asset ON asset_usage (asset_id)',
+  'CREATE UNIQUE INDEX IF NOT EXISTS print_staff_key ON print_staff (link_key)',
 ];
 
 const SEED_SEASONS = [
@@ -763,7 +766,7 @@ async function linkSubmissions(token) {
 //  PRINT HUB — orders from customers, worked on by admin, run by master
 //
 //    customer order link  → print/order.html#<orderKey>   (one shared link)
-//    admin link           → print/index.html#k=<adminKey>
+//    staff (admin) links  → print/index.html#k=<link_key>  (one per person, in print_staff)
 //    master link          → print/index.html#k=<masterKey>
 //  Anyone signed in to the Creative Hub is treated as master.
 // ════════════════════════════════════════════════════════════════════════════
@@ -810,7 +813,7 @@ async function printSettings() {
   let s = null;
   try { s = JSON.parse(await getSetting('PRINT_SETTINGS')); } catch { s = null; }
   if (!s) {
-    s = { masterKey: newKey(), adminKey: newKey(), orderKey: newKey(), orderActive: true, adminActive: true,
+    s = { masterKey: newKey(), orderKey: newKey(), orderActive: true,
           webhookUrl: '', webhookSecret: '', readyMessage: DEFAULT_READY_MESSAGE };
     await DB.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('PRINT_SETTINGS', ?)").bind(JSON.stringify(s)).run();
     s = JSON.parse(await getSetting('PRINT_SETTINGS')); // another request may have created them first
@@ -820,6 +823,14 @@ async function printSettings() {
   if (s.notifyOnNew === undefined) s.notifyOnNew = true;
   if (s.notifyOnDone === undefined) s.notifyOnDone = true;
   if (s.teamEmails === undefined) { s.teamEmails = ''; s.teamEmailOn = false; s.siteUrl = ''; }
+  if (s.adminKey) { // older versions had one shared admin link — keep it working as a staff link
+    const exists = await DB.prepare('SELECT 1 FROM print_staff WHERE link_key = ?').bind(s.adminKey).first();
+    if (!exists) {
+      try { await insertRow('print_staff', { name: 'Shared admin link', link_key: s.adminKey, is_active: s.adminActive !== false }); } catch { /* added by a parallel request */ }
+    }
+    delete s.adminKey; delete s.adminActive;
+    await savePrintSettings(s);
+  }
   return s;
 }
 const savePrintSettings = (s) => setSetting('PRINT_SETTINGS', JSON.stringify(s));
@@ -833,12 +844,52 @@ async function printOrderKeyOk(key) {
   return !!(s.orderActive && key && sameText(key, s.orderKey));
 }
 
-async function printRole(req) {
+// Who is using the Print Hub: the master link, one person's staff link, or someone signed in to the Creative Hub.
+async function printActor(req) {
   const s = await printSettings();
-  if (req.printKey && sameText(req.printKey, s.masterKey)) return 'master';
-  if (req.printKey && s.adminActive && sameText(req.printKey, s.adminKey)) return 'admin';
-  if (req.token) { await verify(req.token); return 'master'; }
+  if (req.printKey && sameText(req.printKey, s.masterKey)) return { role: 'master', who: 'Master' };
+  if (req.printKey) {
+    const r = await DB.prepare('SELECT * FROM print_staff WHERE link_key = ?').bind(String(req.printKey)).first();
+    const st = r && rowOut('print_staff', r);
+    if (st && st.is_active) {
+      if (!st.last_used_at || Date.now() - new Date(st.last_used_at).getTime() > 3600e3) {
+        await DB.prepare('UPDATE print_staff SET last_used_at = ? WHERE id = ?').bind(nowIso(), st.id).run();
+      }
+      return { role: 'admin', who: st.name || 'Admin' };
+    }
+  }
+  if (req.token) { const m = await verify(req.token); return { role: 'master', who: m.name || m.email }; }
   fail('This access link is no longer valid. Please ask for a new one.', 'PRINT_AUTH');
+}
+
+// ── Staff links: one private admin link per person, no account needed ──
+async function staffList() {
+  return (await readTable('print_staff')).map((x) => ({ id: x.id, name: x.name, key: x.link_key, active: x.is_active, last_used_at: x.last_used_at, created_at: x.created_at }));
+}
+
+const cleanStaffName = (name) => {
+  const n = String(name || '').trim().slice(0, 60);
+  if (!n) fail("Type the person's name.");
+  return n;
+};
+
+async function staffAdd(name) {
+  if ((await count('print_staff')) >= 200) fail('You can have up to 200 staff links.');
+  await insertRow('print_staff', { name: cleanStaffName(name), link_key: newKey(), is_active: true });
+  return staffList();
+}
+
+async function staffUpdate(id, patch) {
+  const p = {};
+  if (patch.name !== undefined) p.name = cleanStaffName(patch.name);
+  if (patch.active !== undefined) p.is_active = !!patch.active;
+  await updateRow('print_staff', String(id || ''), p);
+  return staffList();
+}
+
+async function staffRegenerate(id) {
+  await updateRow('print_staff', String(id || ''), { link_key: newKey(), last_used_at: null });
+  return staffList();
 }
 
 async function printRoute(req, ctx) {
@@ -856,19 +907,23 @@ async function printRoute(req, ctx) {
     return { order_no: created.order_no };
   }
 
-  // ── Admin & master ──
-  const role = await printRole(req);
-  const needMaster = () => { if (role !== 'master') fail('Only the master link can do that.'); };
+  // ── Staff (admin) & master ──
+  const actor = await printActor(req);
+  const needMaster = () => { if (actor.role !== 'master') fail('Only the master link can do that.'); };
   switch (a) {
-    case 'printMe': return printMe(role);
+    case 'printMe': return printMe(actor);
     case 'printOrders': return readTable('print_orders');
-    case 'printUpdate': return printUpdate(role, req.id, req.patch || {});
+    case 'printUpdate': return printUpdate(actor, req.id, req.patch || {});
     case 'printNotify': return printNotifyAgain(req.id, req.kind);
     case 'printDelete': needMaster(); return printDelete(req.id);
     case 'printSaveQuestions': needMaster(); return printSaveQuestions(req.questions);
     case 'printSaveSettings': needMaster(); return printSaveSettings(req.settings || {});
     case 'printRegenerate': needMaster(); return printRegenerate(req.which);
     case 'printSetActive': needMaster(); return printSetActive(req.which, !!req.active);
+    case 'printStaffAdd': needMaster(); return staffAdd(req.name);
+    case 'printStaffUpdate': needMaster(); return staffUpdate(req.id, req.patch || {});
+    case 'printStaffRegenerate': needMaster(); return staffRegenerate(req.id);
+    case 'printStaffDelete': needMaster(); await deleteRows('print_staff', [String(req.id || '')]); return staffList();
     case 'printTestNotify': needMaster(); return printTestNotify(req.kind);
     case 'printTestTeamEmail': needMaster(); return teamEmail({ order_no: 'P-TEST', customer_name: 'Test Customer', company: 'Test Co',
       phone: '+60123456789', summary: 'Flyers', quantity: '500', due_date: null, answers: [], id: '' }, true);
@@ -886,13 +941,15 @@ async function afterNewOrder(created) {
   if (o) await updateRow('print_orders', o.id, { history: (o.history || []).concat(entries) });
 }
 
-async function printMe(role) {
+async function printMe(actor) {
   const s = await printSettings();
-  const out = { role, questions: await printQuestions(), botLinked: !!s.webhookUrl, readyMessage: s.readyMessage,
+  const role = actor.role;
+  const out = { role, name: actor.who, questions: await printQuestions(), botLinked: !!s.webhookUrl, readyMessage: s.readyMessage,
                 newOrderMessage: s.newOrderMessage, notifyOnDone: s.notifyOnDone, emailReady: !!ENV.RESEND_API_KEY,
                 storage: await storageInfo() };
   if (role === 'master') {
-    out.settings = { masterKey: s.masterKey, adminKey: s.adminKey, orderKey: s.orderKey, orderActive: s.orderActive, adminActive: s.adminActive,
+    out.staff = await staffList();
+    out.settings = { masterKey: s.masterKey, orderKey: s.orderKey, orderActive: s.orderActive,
                      webhookUrl: s.webhookUrl, webhookSecret: s.webhookSecret, readyMessage: s.readyMessage,
                      newOrderMessage: s.newOrderMessage, notifyOnNew: s.notifyOnNew, notifyOnDone: s.notifyOnDone,
                      teamEmails: s.teamEmails, teamEmailOn: s.teamEmailOn };
@@ -953,19 +1010,19 @@ async function findOrder(id) {
   return o;
 }
 
-async function printUpdate(role, id, patch) {
+async function printUpdate(actor, id, patch) {
   const o = await findOrder(id);
   const p = {};
   const history = o.history || [];
   if (patch.status && PRINT_STATUSES.includes(patch.status) && patch.status !== o.status) {
     p.status = patch.status;
-    history.push({ status: patch.status, at: nowIso(), by: role });
+    history.push({ status: patch.status, at: nowIso(), by: actor.who });
     const ps = await printSettings();
     if (patch.status === 'completed' && patch.notify !== false && ps.webhookUrl && ps.notifyOnDone) history.push(await notify('completed', o, false));
     p.history = history;
   }
   if (patch.whatsapp) { // staff opened WhatsApp with a message for the customer
-    history.push({ event: 'whatsapp', kind: patch.whatsapp === 'created' ? 'created' : 'completed', at: nowIso(), by: role });
+    history.push({ event: 'whatsapp', kind: patch.whatsapp === 'created' ? 'created' : 'completed', at: nowIso(), by: actor.who });
     p.history = history;
   }
   if (patch.internal_notes !== undefined) p.internal_notes = String(patch.internal_notes || '').slice(0, 20000) || null;
@@ -1029,25 +1086,25 @@ async function printSaveSettings(input) {
   if (input.teamEmailOn !== undefined) s.teamEmailOn = !!input.teamEmailOn;
   if (input.siteUrl && /^https?:\/\//.test(input.siteUrl)) s.siteUrl = String(input.siteUrl).split('#')[0];
   await savePrintSettings(s);
-  return (await printMe('master')).settings;
+  return (await printMe({ role: 'master' })).settings;
 }
 
 async function printRegenerate(which) {
   const s = await printSettings();
-  const field = { order: 'orderKey', admin: 'adminKey', master: 'masterKey' }[which];
-  if (!field) fail('Unknown link.');
+  const field = { order: 'orderKey', master: 'masterKey' }[which];
+  if (!field) fail(which === 'admin' ? 'Admin links are per person now — use Staff links.' : 'Unknown link.');
   s[field] = newKey();
   await savePrintSettings(s);
-  return (await printMe('master')).settings;
+  return (await printMe({ role: 'master' })).settings;
 }
 
 async function printSetActive(which, active) {
   const s = await printSettings();
-  const field = { order: 'orderActive', admin: 'adminActive' }[which];
+  const field = { order: 'orderActive' }[which];
   if (!field) fail("That link can't be turned off.");
   s[field] = active;
   await savePrintSettings(s);
-  return (await printMe('master')).settings;
+  return (await printMe({ role: 'master' })).settings;
 }
 
 // ── Bot notifications: "order.created" (new order) and "order.completed" ──

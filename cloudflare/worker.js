@@ -23,7 +23,7 @@
 const TOKEN_DAYS = 30;           // how long a team login lasts
 const PBKDF2_ROUNDS = 20000;     // password hashing strength (kept modest for the free plan's CPU limit)
 const CHUNK = 10 * 1024 * 1024;  // upload part size — big files are sent in pieces of this size
-const SCHEMA_V = '2';            // bump when SCHEMA changes so new columns get added
+const SCHEMA_V = '3';            // bump when SCHEMA changes so new columns get added
 const GB = 1e9;                  // storage is counted the way Cloudflare bills it (1 GB = 1,000,000,000 bytes)
 const DEFAULT_LIMIT_GB = 10;     // uploads stop here (R2's free allowance) — change it in Settings
 
@@ -47,6 +47,8 @@ const SCHEMA = {
                          'due_date', 'answers', 'history', 'internal_notes', 'created_at', 'updated_at'],
                   json: ['answers', 'history'] },
   print_staff:  { cols: ['id', 'name', 'link_key', 'is_active', 'last_used_at', 'created_at'], bool: ['is_active'] },
+  // Phones and computers that get a notification for every new order (even with the app closed).
+  push_subs:    { cols: ['id', 'endpoint', 'p256dh', 'auth', 'who', 'access', 'ref', 'key_hash', 'created_at'] },
 };
 
 const DEFAULTS = {
@@ -58,6 +60,7 @@ const DEFAULTS = {
   asset_usage:  {},
   print_orders: { status: 'new', history: [] },
   print_staff:  { is_active: true },
+  push_subs:    {},
 };
 
 const INDEXES = [
@@ -67,6 +70,7 @@ const INDEXES = [
   'CREATE INDEX IF NOT EXISTS assets_path ON assets (storage_path)',
   'CREATE INDEX IF NOT EXISTS usage_asset ON asset_usage (asset_id)',
   'CREATE UNIQUE INDEX IF NOT EXISTS print_staff_key ON print_staff (link_key)',
+  'CREATE UNIQUE INDEX IF NOT EXISTS push_subs_endpoint ON push_subs (endpoint)',
 ];
 
 const SEED_SEASONS = [
@@ -847,7 +851,7 @@ async function printOrderKeyOk(key) {
 // Who is using the Print Hub: the master link, one person's staff link, or someone signed in to the Creative Hub.
 async function printActor(req) {
   const s = await printSettings();
-  if (req.printKey && sameText(req.printKey, s.masterKey)) return { role: 'master', who: 'Master' };
+  if (req.printKey && sameText(req.printKey, s.masterKey)) return { role: 'master', who: 'Master', access: 'master', keyHash: await sha256(s.masterKey) };
   if (req.printKey) {
     const r = await DB.prepare('SELECT * FROM print_staff WHERE link_key = ?').bind(String(req.printKey)).first();
     const st = r && rowOut('print_staff', r);
@@ -855,10 +859,10 @@ async function printActor(req) {
       if (!st.last_used_at || Date.now() - new Date(st.last_used_at).getTime() > 3600e3) {
         await DB.prepare('UPDATE print_staff SET last_used_at = ? WHERE id = ?').bind(nowIso(), st.id).run();
       }
-      return { role: 'admin', who: st.name || 'Admin' };
+      return { role: 'admin', who: st.name || 'Admin', access: 'staff', ref: st.id, keyHash: await sha256(st.link_key) };
     }
   }
-  if (req.token) { const m = await verify(req.token); return { role: 'master', who: m.name || m.email }; }
+  if (req.token) { const m = await verify(req.token); return { role: 'master', who: m.name || m.email, access: 'team', ref: m.email }; }
   fail('This access link is no longer valid. Please ask for a new one.', 'PRINT_AUTH');
 }
 
@@ -924,6 +928,9 @@ async function printRoute(req, ctx) {
     case 'printStaffUpdate': needMaster(); return staffUpdate(req.id, req.patch || {});
     case 'printStaffRegenerate': needMaster(); return staffRegenerate(req.id);
     case 'printStaffDelete': needMaster(); await deleteRows('print_staff', [String(req.id || '')]); return staffList();
+    case 'printPushSubscribe': return pushSubscribe(actor, req.subscription || {});
+    case 'printPushUnsubscribe': await DB.prepare('DELETE FROM push_subs WHERE endpoint = ?').bind(String(req.endpoint || '')).run(); return true;
+    case 'printPushTest': return pushTest(req.endpoint);
     case 'printTestNotify': needMaster(); return printTestNotify(req.kind);
     case 'printTestTeamEmail': needMaster(); return teamEmail({ order_no: 'P-TEST', customer_name: 'Test Customer', company: 'Test Co',
       phone: '+60123456789', summary: 'Flyers', quantity: '500', due_date: null, answers: [], id: '' }, true);
@@ -936,6 +943,7 @@ async function afterNewOrder(created) {
   const entries = [];
   if (st.teamEmailOn && st.teamEmails) entries.push(await teamEmail(created, false));
   if (st.webhookUrl && st.notifyOnNew) entries.push(await notify('created', created, false));
+  await pushNewOrder(created);
   if (!entries.length) return;
   const o = await getRow('print_orders', created.id);
   if (o) await updateRow('print_orders', o.id, { history: (o.history || []).concat(entries) });
@@ -946,6 +954,7 @@ async function printMe(actor) {
   const role = actor.role;
   const out = { role, name: actor.who, questions: await printQuestions(), botLinked: !!s.webhookUrl, readyMessage: s.readyMessage,
                 newOrderMessage: s.newOrderMessage, notifyOnDone: s.notifyOnDone, emailReady: !!ENV.RESEND_API_KEY,
+                pushKey: (await vapid()).publicKey,
                 storage: await storageInfo() };
   if (role === 'master') {
     out.staff = await staffList();
@@ -1223,4 +1232,137 @@ async function teamEmail(o, test) {
   } catch (e) {
     return { event: 'team', ok: false, at, detail: 'Could not send the team email: ' + String((e && e.message) || e).slice(0, 150) };
   }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  PUSH NOTIFICATIONS — new-order alerts on phones even when the app is closed
+//  Standard Web Push (RFC 8030/8291/8292): this server signs (VAPID) and encrypts each
+//  message itself, so no outside service or account is needed.
+// ════════════════════════════════════════════════════════════════════════════
+const concatBytes = (...parts) => {
+  const out = new Uint8Array(parts.reduce((n, a) => n + a.length, 0));
+  let o = 0;
+  for (const a of parts) { out.set(a, o); o += a.length; }
+  return out;
+};
+async function hmacBytes(keyBytes, data) {
+  const k = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return new Uint8Array(await crypto.subtle.sign('HMAC', k, data));
+}
+async function sha256(text) {
+  return [...new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(String(text))))].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// This server's signing keys, made once and kept in the database.
+let vapidCache = null;
+async function vapid() {
+  if (vapidCache) return vapidCache;
+  let v = null;
+  try { v = JSON.parse(await getSetting('VAPID')); } catch { v = null; }
+  if (!v) {
+    const kp = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+    const made = { publicKey: b64url(await crypto.subtle.exportKey('raw', kp.publicKey)), privateJwk: await crypto.subtle.exportKey('jwk', kp.privateKey) };
+    await DB.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('VAPID', ?)").bind(JSON.stringify(made)).run();
+    v = JSON.parse(await getSetting('VAPID')); // another request may have made them first
+  }
+  const key = await crypto.subtle.importKey('jwk', v.privateJwk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
+  return (vapidCache = { publicKey: v.publicKey, key });
+}
+
+async function vapidHeader(endpoint) {
+  const v = await vapid();
+  const part = (obj) => b64url(enc.encode(JSON.stringify(obj)));
+  const unsigned = part({ typ: 'JWT', alg: 'ES256' }) + '.' +
+    part({ aud: new URL(endpoint).origin, exp: Math.floor(Date.now() / 1000) + 12 * 3600, sub: SELF || 'mailto:alerts@example.com' });
+  const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, v.key, enc.encode(unsigned));
+  return `vapid t=${unsigned}.${b64url(sig)}, k=${v.publicKey}`;
+}
+
+// Encrypts a message for one device (aes128gcm, RFC 8291).
+async function encryptPush(sub, text) {
+  const uaPublic = fromB64url(sub.p256dh), authSecret = fromB64url(sub.auth);
+  const local = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+  const asPublic = new Uint8Array(await crypto.subtle.exportKey('raw', local.publicKey));
+  const uaKey = await crypto.subtle.importKey('raw', uaPublic, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+  const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: 'ECDH', public: uaKey }, local.privateKey, 256));
+  const one = new Uint8Array([1]);
+  const prkKey = await hmacBytes(authSecret, shared);
+  const ikm = (await hmacBytes(prkKey, concatBytes(enc.encode('WebPush: info\0'), uaPublic, asPublic, one))).slice(0, 32);
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const prk = await hmacBytes(salt, ikm);
+  const cek = (await hmacBytes(prk, concatBytes(enc.encode('Content-Encoding: aes128gcm\0'), one))).slice(0, 16);
+  const nonce = (await hmacBytes(prk, concatBytes(enc.encode('Content-Encoding: nonce\0'), one))).slice(0, 12);
+  const aes = await crypto.subtle.importKey('raw', cek, 'AES-GCM', false, ['encrypt']);
+  const cipher = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce }, aes, concatBytes(enc.encode(text), new Uint8Array([2]))));
+  return concatBytes(salt, new Uint8Array([0, 0, 16, 0]), new Uint8Array([asPublic.length]), asPublic, cipher);
+}
+
+async function sendPush(sub, data) {
+  try {
+    const res = await fetch(sub.endpoint, {
+      method: 'POST',
+      headers: { Authorization: await vapidHeader(sub.endpoint), 'Content-Encoding': 'aes128gcm', 'Content-Type': 'application/octet-stream', TTL: '86400', Urgency: 'high' },
+      body: await encryptPush(sub, JSON.stringify(data)),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (res.status === 404 || res.status === 410) { // the device unsubscribed or the app was removed
+      await DB.prepare('DELETE FROM push_subs WHERE id = ?').bind(sub.id).run();
+      return { ok: false, detail: 'This device is no longer subscribed.' };
+    }
+    return res.ok ? { ok: true } : { ok: false, detail: `The notification service replied ${res.status}.` };
+  } catch (e) {
+    return { ok: false, detail: 'Could not reach the notification service.' };
+  }
+}
+
+const validB64 = (v, min, max) => typeof v === 'string' && /^[A-Za-z0-9_-]+=*$/.test(v) && v.length >= min && v.length <= max;
+
+async function pushSubscribe(actor, sub) {
+  const endpoint = String(sub.endpoint || '');
+  let url;
+  try { url = new URL(endpoint); } catch { fail('That device can\'t receive notifications.'); }
+  const local = url.hostname === '127.0.0.1' || url.hostname === 'localhost';
+  if ((url.protocol !== 'https:' && !local) || endpoint.length > 1000) fail('That device can\'t receive notifications.');
+  const keys = sub.keys || {};
+  if (!validB64(keys.p256dh, 80, 100) || !validB64(keys.auth, 16, 30)) fail('That device can\'t receive notifications.');
+  if ((await count('push_subs')) >= 500) fail('Too many devices have alerts turned on. Turn some off first.');
+  await DB.prepare('DELETE FROM push_subs WHERE endpoint = ?').bind(endpoint).run();
+  await insertRow('push_subs', { endpoint, p256dh: keys.p256dh, auth: keys.auth, who: actor.who, access: actor.access, ref: actor.ref || null, key_hash: actor.keyHash || null });
+  return true;
+}
+
+async function pushTest(endpoint) {
+  const r = await DB.prepare('SELECT * FROM push_subs WHERE endpoint = ?').bind(String(endpoint || '')).first();
+  if (!r) return { ok: false, detail: 'This device isn\'t subscribed yet.' };
+  return sendPush(r, { title: 'New-order alerts are on', body: 'You\'ll get a notification like this for every new order — even when the app is closed.', tag: 'gig-test' });
+}
+
+// Devices whose access still works: a turned-off staff link pauses its alerts; a changed or deleted link ends them.
+async function allowedSubs() {
+  const subs = (await DB.prepare('SELECT * FROM push_subs').all()).results;
+  if (!subs.length) return [];
+  const masterHash = await sha256((await printSettings()).masterKey);
+  const staff = new Map((await readTable('print_staff')).map((x) => [x.id, x]));
+  const out = [], stale = [];
+  for (const sub of subs) {
+    if (sub.access === 'master') (sub.key_hash === masterHash ? out : stale).push(sub);
+    else if (sub.access === 'staff') {
+      const st = staff.get(sub.ref);
+      if (!st || sub.key_hash !== await sha256(st.link_key)) stale.push(sub);
+      else if (st.is_active) out.push(sub);
+    } else if (sub.access === 'team') ((await findMember(sub.ref)) ? out : stale).push(sub);
+    else stale.push(sub);
+  }
+  if (stale.length) await deleteRows('push_subs', stale.map((x) => x.id));
+  return out;
+}
+
+async function pushNewOrder(o) {
+  const subs = await allowedSubs();
+  if (!subs.length) return;
+  const who = (o.customer_name || 'A customer') + (o.company ? ` (${o.company})` : '');
+  const what = [o.summary, o.quantity ? '× ' + o.quantity : ''].filter(Boolean).join(' ');
+  const due = dueText(o.due_date);
+  const data = { title: `New order ${o.order_no}`, body: [who, what, due ? 'due ' + due : ''].filter(Boolean).join(' — '), orderId: o.id, tag: o.id };
+  await Promise.all(subs.map((sub) => sendPush(sub, data)));
 }

@@ -171,6 +171,10 @@ export function createCloudflareBackend(cfg, { portal = false } = {}) {
       staffUpdate(printKey, id, patch) { return call('printStaffUpdate', { printKey, id, patch }); },
       staffRegenerate(printKey, id) { return call('printStaffRegenerate', { printKey, id }); },
       staffDelete(printKey, id) { return call('printStaffDelete', { printKey, id }); },
+      // Push notifications: new-order alerts on this device, even when the app is closed.
+      pushSubscribe(printKey, subscription) { return call('printPushSubscribe', { printKey, subscription }); },
+      pushUnsubscribe(printKey, endpoint) { return call('printPushUnsubscribe', { printKey, endpoint }); },
+      pushTest(printKey, endpoint) { return call('printPushTest', { printKey, endpoint }); },
       testNotify(printKey, kind) { return call('printTestNotify', { printKey, kind }); },
       testTeamEmail(printKey) { return call('printTestTeamEmail', { printKey }); },
       async fileLinks(key) {

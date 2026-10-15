@@ -181,12 +181,17 @@ Meta's per-message fees and one-time template approval apply there.
 - **Email:** list your team's addresses and switch it on — each new order is emailed with its details and an **Open the order**
   button. On Cloudflare this needs a free Resend key (see *Team email alerts* above); on the Google version it's sent from
   the Google account that owns the script (about 100 recipients a day).
-- **On each teammate's device:** the first time someone opens the Print Hub on a device (admin link, master link or from the
-  Creative Hub) it asks *“Get alerted when a new order comes in?”* — one click on **Turn on alerts** (and **Allow** when the browser
-  asks) and that device chimes and shows a pop-up for every new order while the Print Hub is open. It can be switched on/off any
-  time with **New-order alerts** at the bottom of the menu. Nobody can switch this on for someone else — browsers require each
-  person to allow it on their own device. Works on computers (Chrome, Edge, Safari, Firefox) and Android phones (Chrome); iPhones
-  don't allow pop-ups from websites, so use email or the bot there. The tab title also shows the count, e.g. “(2) GIG Print Hub”.
+- **On each teammate's phone or computer — push notifications:** the first time someone opens the Print Hub on a device
+  (their staff link, the master link or from the Creative Hub) it asks *“Get alerted when a new order comes in?”* — one tap on
+  **Turn on alerts** (and **Allow**) and that device gets a notification for every new order, **even when the app is closed**,
+  like a WhatsApp message. A test notification arrives straight away to confirm it works. Tapping a notification opens that order.
+  Switch it on/off any time with **New-order alerts** at the bottom of the menu. Nobody can switch this on for someone else.
+  - **iPhone / iPad:** needs iOS 16.4 or newer, and the Print Hub must be **added to the Home Screen** first (Share → Add to
+    Home Screen) — turn alerts on inside that app.
+  - **Android:** works in Chrome (installing the app is optional). **Computers:** Chrome, Edge, Safari and Firefox.
+  - Turning off, changing or deleting someone's staff link also stops alerts to their devices.
+  - Push notifications are sent by your own Cloudflare server (free, no extra account). On the Google version, alerts only
+    appear while the Print Hub is open. The tab title also shows the count, e.g. “(2) GIG Print Hub”.
 - **Bot:** post the `team_message` to your team's WhatsApp or Telegram group.
 
 **Install it as an app on your team's phones and computers** — no app store needed. Both the Creative Hub and the Print Hub

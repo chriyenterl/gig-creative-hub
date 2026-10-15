@@ -5,7 +5,7 @@ import { loadBackend, MODE } from '../api.js';
 import { setApi } from '../store.js';
 import { CONFIG } from '../../config.js';
 import { fmtDate, timeAgo, copyText, parseHash, hrefFor, go, fmtBytes } from '../util.js';
-import { Icon, PageHead, Field, Empty, Pill, Tabs, MultiChips, DialogHost, ToastHost, TooltipHost, InstallButton, InstallHelpHost, StorageWarning, confirmDialog, toast, toastError } from '../ui.js';
+import { Icon, PageHead, Field, Empty, Pill, Tabs, MultiChips, DialogHost, ToastHost, TooltipHost, InstallButton, InstallHelpHost, StorageWarning, isInstalledApp, confirmDialog, toast, toastError } from '../ui.js';
 import {
   ORDER_STATUS, STATUS_ORDER, QUESTION_TYPES, QUESTION_ROLES, hasOptions, newQuestionId, answerText, isOverdue, dueLabel,
   fillMessage, notifyPayload, SAMPLE_ORDER, MESSAGE_TAGS, useFileLinks, waLink, teamMessage,
@@ -33,7 +33,7 @@ addEventListener('hashchange', () => { if (takeKeyFromLink()) location.reload();
 const linkFor = (page, key) => new URL(page === 'order' ? 'order.html#' + key : 'index.html#k=' + key, location.href.split('#')[0]).href;
 
 // ── Tiny store ─────────────────────────────────────────────────────────────
-let P = { loaded: false, role: null, name: '', staff: [], questions: [], settings: null, orders: [], botLinked: false, readyMessage: '', newOrderMessage: '', notifyOnDone: true, emailReady: true };
+let P = { loaded: false, role: null, name: '', staff: [], pushKey: null, questions: [], settings: null, orders: [], botLinked: false, readyMessage: '', newOrderMessage: '', notifyOnDone: true, emailReady: true };
 const subs = new Set();
 const setP = (patch) => { P = { ...P, ...patch }; subs.forEach((f) => f(P)); };
 function usePrint() {
@@ -63,12 +63,57 @@ async function popup(title, body, orderId) {
     return true;
   }
 }
+// ── Push: alerts even when the app is closed (Cloudflare setup; iPhone needs iOS 16.4+ and the app on the Home Screen) ──
+const isIPhone = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const canPush = () => !!(P.pushKey && api.print.pushSubscribe && 'PushManager' in window && 'Notification' in window && 'serviceWorker' in navigator);
+const keyBytes = (b64) => Uint8Array.from(atob(b64.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (b64.length % 4)) % 4)), (c) => c.charCodeAt(0));
+let pushActive = false;
+// Registers this device with the GIG server. Returns its subscription, or null if push isn't possible here.
+async function syncPush(create) {
+  if (!canPush() || Notification.permission !== 'granted') return null;
+  try {
+    const reg = await swReady;
+    if (!reg) return null;
+    let sub = await reg.pushManager.getSubscription();
+    const want = keyBytes(P.pushKey);
+    const have = sub?.options?.applicationServerKey && new Uint8Array(sub.options.applicationServerKey);
+    if (sub && have && (have.length !== want.length || have.some((b, i) => b !== want[i]))) { await sub.unsubscribe(); sub = null; } // server keys changed
+    if (!sub && create) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: want });
+    if (!sub) return null;
+    await api.print.pushSubscribe(getKey(), sub.toJSON());
+    pushActive = true;
+    return sub;
+  } catch { return null; }
+}
+async function stopPush() {
+  pushActive = false;
+  try {
+    const sub = await (await swReady)?.pushManager.getSubscription();
+    if (!sub) return;
+    await api.print.pushUnsubscribe?.(getKey(), sub.endpoint).catch(() => {});
+    await sub.unsubscribe();
+  } catch {}
+}
+async function turnOffAlerts() {
+  try { localStorage.setItem(ALERT_KEY, 'off'); } catch {}
+  await stopPush();
+}
+
 async function turnOnAlerts() {
   if ('Notification' in window && Notification.permission === 'default') { try { await Notification.requestPermission(); } catch {} }
   try { localStorage.setItem(ALERT_KEY, 'on'); } catch {}
   chime();
+  const sub = await syncPush(true);
+  if (sub) {
+    const r = await api.print.pushTest(getKey(), sub.endpoint).catch(() => ({ ok: false }));
+    return toast(r.ok ? "Alerts on — you'll get a notification for every new order, even when the app is closed."
+      : 'Alerts on while the Print Hub is open. (The test notification didn\'t go through — try turning alerts off and on again.)');
+  }
   const shown = await popup('New-order alerts are on', 'This device will chime and show a pop-up when a new order comes in (while the Print Hub is open).');
-  toast(shown ? 'Alerts on for this device.' : 'Alerts on — this device will chime. (Pop-ups aren\'t allowed on this device; allow notifications in the browser settings to get them.)');
+  if (P.pushKey && isIPhone() && !isInstalledApp()) {
+    return toast('Alerts on while this page is open. To get them with the app closed, add the Print Hub to your Home Screen (Share → Add to Home Screen) and turn alerts on there.');
+  }
+  toast(shown ? 'Alerts on for this device while the Print Hub is open.' : 'Alerts on — this device will chime. (Pop-ups aren\'t allowed on this device; allow notifications in the browser settings to get them.)');
 }
 let audio = null;
 const unlockAudio = () => { try { audio = audio || new (window.AudioContext || window.webkitAudioContext)(); audio.resume?.(); } catch {} };
@@ -88,6 +133,7 @@ function chime() {
 function alertNewOrders(list) {
   if (!alertsOn() || !list.length) return;
   chime();
+  if (pushActive) return; // the push notification already showed it
   list.forEach((o) => popup(`New print order ${o.order_no}`, teamMessage('created', o), o.id));
 }
 
@@ -685,13 +731,13 @@ function AlertToggle() {
   const [on, setOn] = useState(alertsOn());
   useEffect(() => { const f = () => setOn(alertsOn()); addEventListener('gig-alerts', f); return () => removeEventListener('gig-alerts', f); }, []);
   const toggle = async () => {
-    if (on) { try { localStorage.setItem(ALERT_KEY, 'off'); } catch {} setOn(false); toast('New-order alerts off on this device.'); dispatchEvent(new Event('gig-alerts')); return; }
+    if (on) { await turnOffAlerts(); setOn(false); toast('New-order alerts off on this device.'); dispatchEvent(new Event('gig-alerts')); return; }
     await turnOnAlerts();
     setOn(true);
     dispatchEvent(new Event('gig-alerts'));
   };
   return html`<button class=${'nav-item alert-toggle' + (on ? ' on' : '')} onClick=${toggle} aria-pressed=${on}
-      data-tip="Sound and pop-up on this device when a new order arrives, while this page is open">
+      data-tip=${P.pushKey ? 'A notification on this device for every new order — even when the app is closed' : 'Sound and pop-up on this device when a new order arrives, while this page is open'}>
     <${Icon} name="bell" /><span>New-order alerts</span><span class=${'mini-switch' + (on ? ' on' : '')}></span></button>`;
 }
 
@@ -706,7 +752,11 @@ function AlertBanner() {
   return html`<div class="alert-banner no-print">
     <span class="alert-banner-icon"><${Icon} name="bell" size=${20} /></span>
     <div><b>Get alerted when a new order comes in?</b>
-      <div class="small muted">This device will chime and show a pop-up while the Print Hub is open. Your browser will ask you to allow notifications.</div></div>
+      <div class="small muted">${P.pushKey
+        ? (isIPhone() && !isInstalledApp()
+          ? 'This page will chime and show a pop-up while it\'s open. For alerts with the app closed, add it to your Home Screen first (Share → Add to Home Screen).'
+          : 'You\'ll get a notification for every new order — even when the app is closed. Your phone or browser will ask you to allow notifications.')
+        : 'This device will chime and show a pop-up while the Print Hub is open. Your browser will ask you to allow notifications.'}</div></div>
     <div class="alert-banner-actions">
       <button class="btn btn-primary btn-sm" onClick=${yes}><${Icon} name="bell" size=${14} />Turn on alerts</button>
       <button class="btn btn-ghost btn-sm" onClick=${later}>Not now</button>
@@ -799,11 +849,12 @@ function App() {
       try {
         const me = await api.print.me(getKey());
         const orders = await api.print.orders(getKey());
-        setP({ loaded: true, role: me.role, name: me.name || '', staff: me.staff || [], questions: me.questions, settings: me.settings || null, botLinked: !!me.settings?.webhookUrl || !!me.botLinked,
+        setP({ loaded: true, role: me.role, name: me.name || '', staff: me.staff || [], pushKey: me.pushKey || null, questions: me.questions, settings: me.settings || null, botLinked: !!me.settings?.webhookUrl || !!me.botLinked,
                readyMessage: me.settings?.readyMessage || me.readyMessage || '', newOrderMessage: me.settings?.newOrderMessage || me.newOrderMessage || '',
                notifyOnDone: me.notifyOnDone !== false, emailReady: me.emailReady !== false, storage: me.storage || null,
                orders: orders.sort(byNewest) });
         setPhase({ id: 'ready' });
+        if (alertsOn()) syncPush(true); // re-register this device so alerts keep arriving with the app closed
       } catch (e) {
         setPhase({ id: 'denied', message: e.message });
       }

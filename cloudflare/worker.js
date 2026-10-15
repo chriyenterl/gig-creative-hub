@@ -1112,9 +1112,11 @@ async function notify(kind, o, test) {
     const headers = { 'Content-Type': 'application/json' };
     if (s.webhookSecret) headers['X-Webhook-Secret'] = s.webhookSecret;
     const res = await fetch(s.webhookUrl, { method: 'POST', headers, body: JSON.stringify(notifyPayload(kind, o, s, test)), signal: AbortSignal.timeout(15000) });
-    return res.ok
-      ? { event: 'notify', kind, ok: true, at, detail: kind === 'completed' ? 'Customer notified via bot.' : 'Bot told about the new order.' }
-      : { event: 'notify', kind, ok: false, at, detail: 'Bot replied with an error (' + res.status + ').' };
+    if (res.ok) return { event: 'notify', kind, ok: true, at, detail: kind === 'completed' ? 'Customer notified via bot.' : 'Bot told about the new order.' };
+    // 520–530 are Cloudflare's own "couldn't reach that site" codes.
+    const detail = res.status >= 520 && res.status <= 530 ? 'Could not reach the bot — check its link is right and the bot is online.'
+      : 'Bot replied with an error (' + res.status + ').';
+    return { event: 'notify', kind, ok: false, at, detail };
   } catch (e) {
     const detail = e && e.name === 'TimeoutError' ? 'The bot took too long to answer.'
       : 'Could not reach the bot — check its link is right and the bot is online.';

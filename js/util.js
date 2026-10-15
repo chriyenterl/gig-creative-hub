@@ -105,6 +105,12 @@ export function fmtNum(n) {
   n = Number(n) || 0;
   return new Intl.NumberFormat(undefined, { notation: n >= 10000 ? 'compact' : 'standard', maximumFractionDigits: 1 }).format(n);
 }
+// Storage totals are counted the way Cloudflare bills them: 1 GB = 1,000,000,000 bytes.
+export function fmtGB(b) {
+  if ((b || 0) < 1e9) return `${Math.round((b || 0) / 1e6)} MB`;
+  return `${(b / 1e9).toFixed(1).replace(/\.0$/, '')} GB`;
+}
+
 export function fmtBytes(b) {
   if (!b && b !== 0) return '';
   const u = ['B', 'KB', 'MB', 'GB', 'TB'];

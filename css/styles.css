@@ -443,6 +443,21 @@ button.chip:hover { border-color: var(--line-strong); }
 /* ── Upload links ────────────────────────────────────────────────────────── */
 .info-box { display: flex; gap: 10px; padding: 12px 14px; border-radius: var(--radius); background: var(--info-bg); color: var(--info-ink); margin-bottom: 8px; font-size: 13.5px; }
 .info-box .icon { margin-top: 1px; }
+
+/* Storage limit */
+.storage-banner { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; margin: 0 0 16px; border-radius: var(--radius);
+  background: var(--warn-bg); color: var(--warn-ink); font-size: 13.5px; line-height: 1.45; }
+.storage-banner.full { background: var(--serious-bg); color: var(--serious-ink); }
+.storage-banner .icon { flex: none; margin-top: 2px; }
+.storage-banner a { color: inherit; font-weight: 650; text-decoration: underline; }
+.storage-box { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.storage-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; font-size: 13.5px; color: var(--ink-2); }
+.storage-head b { color: var(--ink); }
+.storage-bar { height: 10px; border-radius: 999px; background: var(--viz-track); overflow: hidden; }
+.storage-bar > span { display: block; height: 100%; min-width: 4px; border-radius: 999px; background: var(--viz-used); }
+.storage-bar.warn > span { background: var(--warn); }
+.storage-bar.full > span { background: var(--serious); }
+.storage-input { max-width: 110px; }
 .link-list { display: flex; flex-direction: column; gap: 10px; }
 .link-card { display: flex; gap: 16px; justify-content: space-between; flex-wrap: wrap; }
 .link-card.inactive { background: var(--surface-2); box-shadow: none; }

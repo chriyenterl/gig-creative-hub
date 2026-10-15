@@ -1,8 +1,8 @@
 // Team upload: add files to the library (brand kit, raw footage, final content).
 import { html, useState, useEffect } from '../lib.js';
-import { api, insertRow, getState } from '../store.js';
+import { api, insertRow, getState, useStore, refreshStorage } from '../store.js';
 import { CATEGORIES, mediaTypeFor, safeName, stripExt, uid, parseTags, fmtBytes, MEDIA } from '../util.js';
-import { Icon, Modal, Dropzone, Progress, Field, SeasonSelect, TalentSelect, toast } from '../ui.js';
+import { Icon, Modal, Dropzone, Progress, Field, SeasonSelect, TalentSelect, StorageWarning, toast } from '../ui.js';
 
 export function UploadDialog({ onClose, defaults = {} }) {
   const [items, setItems] = useState([]); // { id, file, title, progress, state, error }
@@ -14,6 +14,7 @@ export function UploadDialog({ onClose, defaults = {} }) {
     status: 'approved',
   });
   const [running, setRunning] = useState(false);
+  const { storage } = useStore();
   const patchItem = (id, p) => setItems((xs) => xs.map((x) => (x.id === id ? { ...x, ...p } : x)));
   const setM = (k) => (v) => setMeta((m) => ({ ...m, [k]: v?.target ? v.target.value : v }));
 
@@ -56,9 +57,11 @@ export function UploadDialog({ onClose, defaults = {} }) {
         patchItem(it.id, { state: 'done', progress: 1 });
       } catch (e) {
         patchItem(it.id, { state: 'error', error: e.message });
+        if (/storage is full/i.test(e.message)) break; // nothing else will fit either
       }
     }
     setRunning(false);
+    refreshStorage();
   };
 
   const allDone = items.length > 0 && done === items.length;
@@ -76,6 +79,7 @@ export function UploadDialog({ onClose, defaults = {} }) {
       <button class="btn btn-primary" disabled=${running || !todo.length} onClick=${start}>
         <${Icon} name="upload" size=${16} />${running ? 'Uploading…' : `Upload ${todo.length || ''} file${todo.length === 1 ? '' : 's'}`}
       </button>`}>
+    <${StorageWarning} storage=${storage} settingsHref="#/settings" />
     <div class="form-grid">
       <${Field} label="File under">
         <select value=${meta.category} onChange=${setM('category')} disabled=${running}>

@@ -44,11 +44,19 @@ export async function loadAll() {
   if (api.loadAll) {
     const all = await api.loadAll();
     const sort = (rows, [col, asc]) => [...(rows || [])].sort((a, b) => (a[col] > b[col] ? 1 : a[col] < b[col] ? -1 : 0) * (asc ? 1 : -1));
-    setState({ ...Object.fromEntries(names.map((t) => [t, sort(all[t], TABLES[t].order)])), backendLinks: all.links || null, loaded: true });
+    setState({ ...Object.fromEntries(names.map((t) => [t, sort(all[t], TABLES[t].order)])), backendLinks: all.links || null,
+      storage: all.storage || null, loaded: true });
     return;
   }
   const results = await Promise.all(names.map((t) => api.list(t, TABLES[t])));
-  setState({ ...Object.fromEntries(names.map((t, i) => [t, results[i]])), loaded: true });
+  const storage = api.storage ? await api.storage().catch(() => null) : null;
+  setState({ ...Object.fromEntries(names.map((t, i) => [t, results[i]])), storage, loaded: true });
+}
+
+// How much storage is used vs the upload limit ({ used, limit } in bytes), on backends that have a limit.
+export async function refreshStorage() {
+  if (!api.storage) return;
+  try { setState({ storage: await api.storage() }); } catch { /* keep the last known numbers */ }
 }
 export async function reload(table) {
   setState({ [table]: await api.list(table, TABLES[table]) });
@@ -95,6 +103,7 @@ export async function deleteAssets(assets) {
   await api.removeMany('assets', assets.map((a) => a.id));
   const gone = new Set(assets.map((a) => a.id));
   setState({ assets: state.assets.filter((a) => !gone.has(a.id)) });
+  refreshStorage();
 }
 
 // After logging/removing usage the DB recalculates counts — fetch the fresh asset row.

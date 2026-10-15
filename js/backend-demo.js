@@ -1,7 +1,7 @@
 // Demo backend: same interface as the Supabase one, but everything lives in this
 // browser (localStorage for data, IndexedDB for uploaded files). Used when
 // config.js has no Supabase details, so you can click around before setting up.
-import { uid, newToken, today } from './util.js';
+import { uid, newToken, today, fmtGB } from './util.js';
 import { DEFAULT_QUESTIONS, DEFAULT_READY_MESSAGE, DEFAULT_NEW_MESSAGE, notifyPayload, isVisible } from './print/model.js';
 
 const KEY = 'mediahub-demo-v1';
@@ -279,6 +279,31 @@ export function createDemoBackend() {
     if (table === 'assets') db.asset_usage = db.asset_usage.filter((u) => u.asset_id !== id);
     if (table === 'asset_usage' && row) syncUsage(row.asset_id);
   }
+  // Storage limit (same rule as the live version): new uploads stop once the limit is reached.
+  const LIMIT_KEY = 'gig-demo-storage-limit';
+  function demoStorage() {
+    let used = db.assets.reduce((n, a) => n + (a.size_bytes || 0), 0);
+    try {
+      for (const o of JSON.parse(localStorage.getItem(PRINT_KEY))?.orders || []) {
+        for (const a of o.answers || []) {
+          const list = a.type === 'file' ? a.value : a.type === 'voice_text' ? a.value?.files : null;
+          for (const f of list || []) used += f.size || 0;
+        }
+      }
+    } catch {}
+    let gb = 10;
+    try { gb = Number(localStorage.getItem(LIMIT_KEY)) || 10; } catch {}
+    return { used, limit: gb * 1e9 };
+  }
+  function checkSpace(size, who) {
+    const { used, limit } = demoStorage();
+    if (used + size <= limit) return;
+    if (who !== 'team') throw new Error('Uploads are paused right now because our storage is full. Please contact the GIG team.');
+    throw new Error(used >= limit
+      ? `Storage is full (${fmtGB(used)} of your ${fmtGB(limit)} limit). Delete old files, or raise the limit in Settings, to upload more.`
+      : `Not enough space for this file — ${fmtGB(used)} of your ${fmtGB(limit)} limit is used. Delete old files, or raise the limit in Settings.`);
+  }
+
   function validLink(token) {
     return db.upload_links.find((l) => l.token === token && l.is_active && (!l.expires_at || new Date(l.expires_at) > new Date()));
   }
@@ -335,7 +360,8 @@ export function createDemoBackend() {
     async remove(table, id) { await wait(); removeRow(table, id); save(); },
     async removeMany(table, ids) { await wait(); ids.forEach((id) => removeRow(table, id)); save(); },
 
-    async uploadFile(path, file, { onProgress } = {}) {
+    async uploadFile(path, file, { onProgress, linkToken } = {}) {
+      checkSpace(file.size, linkToken ? 'creator' : 'team');
       for (let p = 0; p <= 1; p += 0.2) { onProgress?.(p); await wait(90); }
       await idb.put(path, file);
       onProgress?.(1);
@@ -409,6 +435,7 @@ export function createDemoBackend() {
         async form(orderKey) { await wait(); return orderOk(orderKey) ? { questions: clone(pload().questions) } : null; },
         async uploadFile(file, { orderKey, onProgress } = {}) {
           if (!orderOk(orderKey)) throw new Error('This order link is no longer active. Please contact us.');
+          checkSpace(file.size, 'customer');
           const path = `print/${uid()}-${file.name}`;
           for (let p = 0; p <= 1; p += 0.25) { onProgress?.(p); await wait(80); }
           await idb.put(path, file);
@@ -453,7 +480,7 @@ export function createDemoBackend() {
           const r = role(key);
           const st = pload().settings;
           return { role: r, questions: clone(pload().questions), botLinked: !!st.webhookUrl, readyMessage: st.readyMessage,
-                   newOrderMessage: st.newOrderMessage, notifyOnDone: st.notifyOnDone,
+                   newOrderMessage: st.newOrderMessage, notifyOnDone: st.notifyOnDone, storage: demoStorage(),
                    ...(r === 'master' ? { settings: settingsOut() } : {}) };
         },
         async orders(key) { await wait(); role(key); return clone(pload().orders); },
@@ -595,9 +622,16 @@ export function createDemoBackend() {
       },
     },
 
+    async storage() { return demoStorage(); },
+    async setStorageLimit(gb) {
+      if (!(Number(gb) >= 1)) throw new Error('Enter a limit between 1 and 100,000 GB.');
+      try { localStorage.setItem(LIMIT_KEY, String(Math.round(Number(gb) * 10) / 10)); } catch {}
+      return demoStorage();
+    },
+
     // Demo-only: wipe everything and start again with sample data.
     async resetDemo() {
-      try { localStorage.removeItem(KEY); localStorage.removeItem(PRINT_KEY); } catch {}
+      try { localStorage.removeItem(KEY); localStorage.removeItem(PRINT_KEY); localStorage.removeItem(LIMIT_KEY); } catch {}
       await idb.clear().catch(() => {});
       db = seed();
       save();

@@ -25,6 +25,7 @@ One central place for your marketing media — instead of juggling Google Sheets
 | The server that connects them | A **Cloudflare Worker** ([`cloudflare/worker.js`](cloudflare/worker.js)) | Free (up to 100,000 requests a day) |
 
 Cloudflare needs a payment card on file before it turns on R2, even though the first 10 GB are free.
+**The app stops new uploads at 10 GB** (change the limit in **Settings → Storage**), so you're never charged unless you raise it.
 Files are stored in tidy folders: *final/*, *raw/*, *brand/*, *creators/&lt;creator&gt;/*, *print/*.
 
 > Prefer Google Drive + Sheets (no card needed) or Supabase? Both are still supported — see the
@@ -203,7 +204,9 @@ The Print Hub works with the Cloudflare or Google setup (or demo mode) — not w
   automatically. Keep the page open until an upload finishes.
 - **File links:** so previews, video playback and downloads work in the app, each file has its own long, random address
   (only shown inside the app). **Copy share link** gives that address — anyone you send it to can view the file.
-- **Storage use:** see it in the Cloudflare dashboard under **R2 Object Storage → gig-hub-files**.
+- **Storage limit:** **Settings → Storage** shows how much is used. The dashboard warns from 80% full; at the limit
+  (10 GB to start) new uploads stop — for the team, creator links and print orders — until you delete old files or raise it.
+  Cloudflare's own view is under **R2 Object Storage → gig-hub-files**.
 - **Limits:** the free plan allows 100,000 server requests a day — plenty for a team. If you ever hit it, Cloudflare's
   Workers Paid plan (US$5/month) lifts it.
 

@@ -9,7 +9,7 @@ compatibility_date = "2025-09-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "gig-hub"
-database_id = "PASTE-YOUR-D1-DATABASE-ID-HERE"
+database_id = "8ae551d8-e332-4889-9a5c-0f2d83417190"
 
 # Files: photos, videos, brand kit, creator uploads, print artwork
 [[r2_buckets]]

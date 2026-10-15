@@ -145,6 +145,10 @@ export function createCloudflareBackend(cfg, { portal = false } = {}) {
     shareNote: 'Share link copied.',
     async removeFiles(keys) { if (keys.length) await call('removeFiles', { ids: keys }); },
 
+    // Storage used vs the upload limit, in bytes.
+    storage() { return call('storage'); },
+    setStorageLimit(gb) { return call('setStorageLimit', { gb }); },
+
     // ── Print Hub ────────────────────────────────────────────────────────
     print: {
       form(orderKey) { return call('printForm', { orderKey }); },

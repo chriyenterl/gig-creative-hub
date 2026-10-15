@@ -5,7 +5,7 @@ import { loadBackend, MODE } from '../api.js';
 import { setApi } from '../store.js';
 import { CONFIG } from '../../config.js';
 import { fmtDate, timeAgo, copyText, parseHash, hrefFor, go, fmtBytes } from '../util.js';
-import { Icon, PageHead, Field, Empty, Pill, Tabs, MultiChips, DialogHost, ToastHost, TooltipHost, InstallButton, InstallHelpHost, confirmDialog, toast, toastError } from '../ui.js';
+import { Icon, PageHead, Field, Empty, Pill, Tabs, MultiChips, DialogHost, ToastHost, TooltipHost, InstallButton, InstallHelpHost, StorageWarning, confirmDialog, toast, toastError } from '../ui.js';
 import {
   ORDER_STATUS, STATUS_ORDER, QUESTION_TYPES, QUESTION_ROLES, hasOptions, newQuestionId, answerText, isOverdue, dueLabel,
   fillMessage, notifyPayload, SAMPLE_ORDER, MESSAGE_TAGS, useFileLinks, waLink, teamMessage,
@@ -702,6 +702,7 @@ function Shell() {
     <main class="main">
       ${MODE === 'demo' && html`<div class="demo-banner no-print"><${Icon} name="alert" size=${16} /><span><b>Demo mode</b> — sample orders, saved only in this browser.</span></div>`}
       <${AlertBanner} />
+      <${StorageWarning} storage=${P.storage} print />
       ${page}
     </main>
   </div>`;
@@ -733,7 +734,8 @@ function App() {
         const orders = await api.print.orders(getKey());
         setP({ loaded: true, role: me.role, questions: me.questions, settings: me.settings || null, botLinked: !!me.settings?.webhookUrl || !!me.botLinked,
                readyMessage: me.settings?.readyMessage || me.readyMessage || '', newOrderMessage: me.settings?.newOrderMessage || me.newOrderMessage || '',
-               notifyOnDone: me.notifyOnDone !== false, emailReady: me.emailReady !== false, orders: orders.sort(byNewest) });
+               notifyOnDone: me.notifyOnDone !== false, emailReady: me.emailReady !== false, storage: me.storage || null,
+               orders: orders.sort(byNewest) });
         setPhase({ id: 'ready' });
       } catch (e) {
         setPhase({ id: 'denied', message: e.message });

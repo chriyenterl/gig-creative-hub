@@ -1,7 +1,7 @@
 // Reusable UI pieces: icons, pills, modal, confirm dialog, toasts, tooltips,
 // media thumbnails/previews, drag-and-drop zone, form fields.
 import { html, useState, useEffect, useRef } from './lib.js';
-import { ASSET_STATUS, MEDIA, talentStatus, EVERGREEN } from './util.js';
+import { ASSET_STATUS, MEDIA, talentStatus, EVERGREEN, fmtGB } from './util.js';
 import { api, useStore } from './store.js';
 
 // ── Icons (inline SVG, stroke = currentColor) ─────────────────────────────
@@ -234,6 +234,24 @@ export async function downloadAsset(asset) {
     if (api.mode === 'google') a.target = '_blank'; // Drive shows its own download page for big files
     document.body.append(a); a.click(); a.remove();
   } catch (e) { toastError(e); }
+}
+
+// ── Storage limit warning (shown from 80% full; uploads stop at 100%) ─────
+export function StorageWarning({ storage, settingsHref = '#/settings', print = false }) {
+  if (!storage || !storage.limit) return null;
+  const ratio = storage.used / storage.limit;
+  if (ratio < 0.8) return null;
+  const full = ratio >= 1;
+  const nums = `${fmtGB(storage.used)} of ${fmtGB(storage.limit)}`;
+  const fix = html`Delete old files or raise the limit in <a href=${settingsHref}>Settings</a>.`;
+  let text;
+  if (print) text = full
+    ? html`<b>Storage is full (${nums}).</b> Customers can't attach files to new orders until space is freed in the Creative Hub (Settings → Storage).`
+    : html`<b>Storage is ${Math.round(ratio * 100)}% full (${nums}).</b> When it's full, customers won't be able to attach files to orders.`;
+  else text = full
+    ? html`<b>Storage is full (${nums}).</b> New uploads are paused — including creator links and print order files. ${fix}`
+    : html`<b>Storage is ${Math.round(ratio * 100)}% full (${nums}).</b> New uploads stop at ${fmtGB(storage.limit)}. ${fix}`;
+  return html`<div class=${'storage-banner' + (full ? ' full' : '')} role="status"><${Icon} name="alert" size=${16} /><span>${text}</span></div>`;
 }
 
 // ── Drag-and-drop file picker ─────────────────────────────────────────────

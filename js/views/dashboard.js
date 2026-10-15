@@ -1,7 +1,7 @@
 import { html } from '../lib.js';
 import { useStore, openAsset, talentById, getState } from '../store.js';
 import { fmtNum, timeAgo, hrefFor, TALENT_STATUS, EVERGREEN, linkState } from '../util.js';
-import { Icon, PageHead, MediaThumb, useSignedUrls, StatusPill, Empty } from '../ui.js';
+import { Icon, PageHead, MediaThumb, useSignedUrls, StatusPill, Empty, StorageWarning } from '../ui.js';
 
 const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
 
@@ -32,7 +32,7 @@ function UsageMeter({ label, used, total, href }) {
 }
 
 export function Dashboard() {
-  const { assets, seasons, talents, upload_links } = useStore();
+  const { assets, seasons, talents, upload_links, storage } = useStore();
   const live = assets.filter((a) => a.status !== 'rejected');
   const pending = assets.filter((a) => a.status === 'pending');
   const changes = assets.filter((a) => a.status === 'changes');
@@ -71,6 +71,7 @@ export function Dashboard() {
       <a class="btn" href=${hrefFor('links', { new: 1 })}><${Icon} name="link" size=${16} />New upload link</a>
       <a class="btn btn-primary" href=${hrefFor('library')}><${Icon} name="image" size=${16} />Open library</a>
     <//>
+    <${StorageWarning} storage=${storage} settingsHref=${hrefFor('settings')} />
 
     <div class="stats">
       <${Stat} n="1" icon="image" hero label="Total content" value=${assets.length} href=${hrefFor('library')}

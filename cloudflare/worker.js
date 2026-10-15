@@ -24,6 +24,8 @@ const TOKEN_DAYS = 30;           // how long a team login lasts
 const PBKDF2_ROUNDS = 20000;     // password hashing strength (kept modest for the free plan's CPU limit)
 const CHUNK = 10 * 1024 * 1024;  // upload part size — big files are sent in pieces of this size
 const SCHEMA_V = '1';            // bump when SCHEMA changes so new columns get added
+const GB = 1e9;                  // storage is counted the way Cloudflare bills it (1 GB = 1,000,000,000 bytes)
+const DEFAULT_LIMIT_GB = 10;     // uploads stop here (R2's free allowance) — change it in Settings
 
 // ── Data model ──────────────────────────────────────────────────────────────
 const SCHEMA = {
@@ -163,9 +165,16 @@ async function route(req, ctx) {
     case 'removeMany': await apiRemove(req.table, req.ids || []); return true;
     case 'startUpload': {
       const folder = ['final', 'raw', 'brand'].includes(req.category) ? req.category : 'final';
-      return startUpload(folder + '/', req);
+      return startUpload(folder + '/', req, 'team');
     }
     case 'removeFiles': return removeFiles(req.ids || []);
+    case 'storage': return storageInfo();
+    case 'setStorageLimit': {
+      const gb = Number(req.gb);
+      if (!Number.isFinite(gb) || gb < 1 || gb > 100000) fail('Enter a limit between 1 and 100,000 GB.');
+      await setSetting('STORAGE_LIMIT_GB', String(Math.round(gb * 10) / 10));
+      return storageInfo();
+    }
   }
   fail('Unknown action: ' + a);
 }
@@ -328,6 +337,7 @@ async function bootstrap() {
   const out = {};
   for (const t of ['assets', 'talents', 'seasons', 'upload_links', 'team_members']) out[t] = await listRows(t);
   out.links = null;
+  out.storage = await storageInfo();
   return out;
 }
 
@@ -540,30 +550,34 @@ async function readTicket(ticket) {
 }
 
 // Reserves a place for a file and returns where to send it. Big files go up in CHUNK-sized parts.
-async function startUpload(prefix, req) {
+async function startUpload(prefix, req, who) {
   const name = String(req.name || 'file').slice(0, 200);
   const mime = String(req.mimeType || 'application/octet-stream').slice(0, 200);
   const size = Math.max(0, Number(req.size) || 0);
+  await checkSpace(size, who);
   const key = `${prefix}${uuid()}/${safeName(name)}`;
   let uploadId = null;
   if (size > CHUNK) {
     const mpu = await FILES.createMultipartUpload(key, { httpMetadata: { contentType: mime }, customMetadata: { name } });
     uploadId = mpu.uploadId;
   }
-  return { uploadUrl: `${SELF}/upload/${await makeTicket({ k: key, u: uploadId, t: mime, n: name })}`, chunkSize: CHUNK };
+  return { uploadUrl: `${SELF}/upload/${await makeTicket({ k: key, u: uploadId, t: mime, n: name, s: size })}`, chunkSize: CHUNK };
 }
 
 async function handleUpload(request, url) {
   const d = await readTicket(url.pathname.slice('/upload/'.length));
+  const length = Number(request.headers.get('content-length') || 0);
   if (request.method === 'PUT' && !d.u) {
-    await FILES.put(d.k, request.body, { httpMetadata: { contentType: d.t }, customMetadata: { name: d.n } });
+    if (length > (d.s || 0) + 4096) fail('This file is bigger than expected. Please try again.');
+    const obj = await FILES.put(d.k, request.body, { httpMetadata: { contentType: d.t }, customMetadata: { name: d.n } });
+    await addStored(obj ? obj.size : length);
     return { done: true, fileId: d.k };
   }
   if (!d.u) fail('Invalid upload.');
   const mpu = FILES.resumeMultipartUpload(d.k, d.u);
   if (request.method === 'PUT') {
     const n = Number(url.searchParams.get('part'));
-    if (!Number.isInteger(n) || n < 1 || n > 10000) fail('Invalid upload.');
+    if (!Number.isInteger(n) || n < 1 || n > Math.ceil((d.s || 0) / CHUNK) || length > CHUNK) fail('Invalid upload.');
     const part = await mpu.uploadPart(n, request.body);
     return { partNumber: part.partNumber, etag: part.etag };
   }
@@ -572,7 +586,8 @@ async function handleUpload(request, url) {
     try { body = await request.json(); } catch { fail('Invalid upload.'); }
     const parts = (body.parts || []).map((p) => ({ partNumber: Number(p.partNumber), etag: String(p.etag) }));
     if (!parts.length) fail('Invalid upload.');
-    await mpu.complete(parts);
+    const obj = await mpu.complete(parts);
+    await addStored(obj.size);
     return { done: true, fileId: d.k };
   }
   fail('Invalid upload.');
@@ -623,8 +638,52 @@ async function serveFile(request, url) {
 
 async function removeFiles(keys) {
   keys = keys.map(String).filter(knownKey);
+  let freed = 0;
+  for (let i = 0; i < keys.length; i += 50) {
+    const heads = await Promise.all(keys.slice(i, i + 50).map((k) => FILES.head(k).catch(() => null)));
+    freed += heads.reduce((n, h) => n + (h ? h.size : 0), 0);
+  }
   for (let i = 0; i < keys.length; i += 1000) await FILES.delete(keys.slice(i, i + 1000));
+  if (freed) await addStored(-freed);
   return true;
+}
+
+// ── Storage limit: new uploads stop once the limit is reached, so Cloudflare never bills for more ──
+// The running total is kept in settings and recounted from R2 every few hours to stay accurate.
+async function storageUsed() {
+  const [bytes, at] = await Promise.all([getSetting('STORED_BYTES'), getSetting('STORED_AT')]);
+  if (bytes !== null && Date.now() - Number(at || 0) < 6 * 3600e3) return Math.max(0, Number(bytes) || 0);
+  let total = 0, cursor;
+  do {
+    const r = await FILES.list({ cursor, limit: 1000 });
+    for (const o of r.objects) total += o.size;
+    cursor = r.truncated ? r.cursor : undefined;
+  } while (cursor);
+  await setSetting('STORED_BYTES', String(total));
+  await setSetting('STORED_AT', String(Date.now()));
+  return total;
+}
+
+async function addStored(delta) {
+  if (!delta) return;
+  await DB.prepare("UPDATE settings SET value = MAX(0, CAST(value AS INTEGER) + ?) WHERE key = 'STORED_BYTES'").bind(Math.round(delta)).run();
+}
+
+async function storageInfo() {
+  const limitGb = Number(await getSetting('STORAGE_LIMIT_GB')) || DEFAULT_LIMIT_GB;
+  return { used: await storageUsed(), limit: limitGb * GB };
+}
+
+const gbText = (b) => (b < GB ? Math.round(b / 1e6) + ' MB' : (b / GB).toFixed(1).replace(/\.0$/, '') + ' GB');
+
+async function checkSpace(size, who) {
+  const { used, limit } = await storageInfo();
+  if (used + size <= limit) return;
+  if (who !== 'team') fail('Uploads are paused right now because our storage is full. Please contact the GIG team.', 'STORAGE_FULL');
+  fail(used >= limit
+    ? `Storage is full (${gbText(used)} of your ${gbText(limit)} limit). Delete old files, or raise the limit in Settings, to upload more.`
+    : `Not enough space for this file — ${gbText(used)} of your ${gbText(limit)} limit is used. Delete old files, or raise the limit in Settings.`,
+  'STORAGE_FULL');
 }
 
 function mediaTypeFor(mime) {
@@ -666,7 +725,7 @@ async function linkFolder(l) {
 async function linkStartUpload(req) {
   const l = await activeLink(req.linkToken);
   if (!l) fail('This upload link is no longer active. Please contact the team.');
-  return startUpload(await linkFolder(l), req);
+  return startUpload(await linkFolder(l), req, 'creator');
 }
 
 async function linkSubmit(req) {
@@ -788,7 +847,7 @@ async function printRoute(req, ctx) {
   if (a === 'printForm') return (await printOrderKeyOk(req.orderKey)) ? { questions: await printQuestions() } : null;
   if (a === 'printStartUpload') {
     if (!(await printOrderKeyOk(req.orderKey))) fail('This order link is no longer active. Please contact us.');
-    return startUpload('print/', req);
+    return startUpload('print/', req, 'customer');
   }
   if (a === 'printSubmit') {
     const created = await printSubmit(req);
@@ -830,7 +889,8 @@ async function afterNewOrder(created) {
 async function printMe(role) {
   const s = await printSettings();
   const out = { role, questions: await printQuestions(), botLinked: !!s.webhookUrl, readyMessage: s.readyMessage,
-                newOrderMessage: s.newOrderMessage, notifyOnDone: s.notifyOnDone, emailReady: !!ENV.RESEND_API_KEY };
+                newOrderMessage: s.newOrderMessage, notifyOnDone: s.notifyOnDone, emailReady: !!ENV.RESEND_API_KEY,
+                storage: await storageInfo() };
   if (role === 'master') {
     out.settings = { masterKey: s.masterKey, adminKey: s.adminKey, orderKey: s.orderKey, orderActive: s.orderActive, adminActive: s.adminActive,
                      webhookUrl: s.webhookUrl, webhookSecret: s.webhookSecret, readyMessage: s.readyMessage,
@@ -1056,7 +1116,9 @@ async function notify(kind, o, test) {
       ? { event: 'notify', kind, ok: true, at, detail: kind === 'completed' ? 'Customer notified via bot.' : 'Bot told about the new order.' }
       : { event: 'notify', kind, ok: false, at, detail: 'Bot replied with an error (' + res.status + ').' };
   } catch (e) {
-    return { event: 'notify', kind, ok: false, at, detail: 'Could not reach the bot: ' + String((e && e.message) || e).slice(0, 150) };
+    const detail = e && e.name === 'TimeoutError' ? 'The bot took too long to answer.'
+      : 'Could not reach the bot — check its link is right and the bot is online.';
+    return { event: 'notify', kind, ok: false, at, detail };
   }
 }
 

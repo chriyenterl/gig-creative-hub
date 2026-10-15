@@ -19,7 +19,7 @@ export const CONFIG = {
 
   // ── Cloudflare (recommended): R2 for files + D1 for data ─────────────────────
   // Paste your Worker's address, e.g. 'https://gig-hub-api.yourname.workers.dev'. See README.md.
-  CLOUDFLARE_API_URL: '',
+  CLOUDFLARE_API_URL: 'https://gig-hub-api.gigcreatives.workers.dev',
 
   // ── Alternative (free): Google Drive + Google Sheets ───────────────────────
   // Paste the Apps Script web app URL (ends in /exec). See README.md.

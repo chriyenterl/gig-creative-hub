@@ -95,18 +95,10 @@ CLOUDFLARE_API_URL: 'https://gig-hub-api.yourname.workers.dev',
 ### 6. Create your admin account
 Open the site. The first time, it asks you to **create the admin account** (your email + a password).
 Do this straight away — the first person to open it becomes the owner.
-Add teammates later in **Settings → Team members** (you give each a temporary password).
+Give your team **team links** (Print Hub → Links & access) — no accounts or passwords needed. Owners who manage the team
+and settings can be added in **Settings → Team members** (you give each a temporary password).
 
 **Updating the server later:** run `npx wrangler deploy` again in the `cloudflare` folder. The address stays the same.
-
-### Team email alerts (optional)
-Cloudflare doesn't send email by itself, so new-order emails go through **Resend** (free for 3,000 emails a month):
-1. Create an account at [resend.com](https://resend.com) and make an **API key**.
-2. In the `cloudflare` folder run `npx wrangler secret put RESEND_API_KEY` and paste the key when asked.
-3. Until you verify your own domain in Resend, it can only email the address you signed up with. After verifying
-   a domain, set `MAIL_FROM` in `wrangler.toml` (see the comment there) and deploy again.
-
-Device alerts and your bot work without this.
 
 ---
 
@@ -137,20 +129,24 @@ then **Mark as used** with where it went. The dashboard's used / not-used number
 
 ## Print Hub
 
-Open it from the Creative Hub sidebar (**Print Hub**). Anyone signed in to the hub has **master** access.
+Open it from the Creative Hub sidebar (**Print Hub**). Owners signed in to the hub with a password have **master** access.
 
 | Link | For | Can do |
 |---|---|---|
 | **Customer order link** — `print/order.html#…` | All customers (one shared link) | Fill in the order form, attach artwork, submit, get an order number |
-| **Staff links** — `print/index.html#k=…` | Production staff — **one link per person** | See all orders, move them New → Pending → Completed, notes, job sheets |
+| **Team link — Print Hub only** — `print/index.html#k=…` | Production staff — **one link per person** | See all orders, move them New → Pending → Completed, notes, job sheets |
+| **Team link — Print Hub + Creative Hub** — `index.html#k=…` | Team members who also work on content — **one per person** | Everything above, plus the whole Creative Hub (library, uploads, review, talents, upload links, seasons) |
 | **Master link** — `print/index.html#k=…` | You | Everything, plus: edit the order form, links & bot settings, delete orders |
 
-All of them are in **Print Hub → Links & access** (master). **Staff links:** type a person's name and click **Create link** —
-the link is copied, ready to send. They don't need an account or password: they open the link and go straight to the orders,
-their name shows in the menu ("Ali · Admin"), and order history records who moved each order ("by Ali"). Each person's link
-can be **turned off**, **changed** (their old one stops working immediately), **renamed** or **deleted** without affecting
-anyone else, and you can see when it was last opened. The customer link can be changed or disabled; the master link can be
-changed. A link is remembered on the device it's opened on; "Forget this link" signs it out.
+All of them are in **Print Hub → Links & access** (master). **Team links:** pick **Print Hub only** or **Print Hub + Creative
+Hub**, type the person's name and click **Create link** — the link is copied, ready to send. They don't need an account or
+password: they open the link and they're in. A Creative Hub link opens the Creative Hub with the Print Hub in its menu; their
+name shows in the menu ("Ali · Admin") and order history records who moved each order ("by Ali"). Team-link users can do the
+everyday work but **only owners (password sign-in) can manage team members, the storage limit and Print Hub settings**.
+Each person's link can be **turned off**, **changed** (their old one — and any session it opened — stops working immediately),
+switched between the two kinds, **renamed** or **deleted** without affecting anyone else, and you can see when it was last
+opened. On an installed iPhone app, paste the link once on the sign-in screen ("Have a team link?"). The customer link can be
+changed or disabled; the master link can be changed. A link is remembered on the device it's opened on; "Forget this link" signs it out.
 
 **Order form:** **Order form** page (master). The default form asks: name, company, phone/WhatsApp, what to print, quantity,
 **size**, **paper type** (hard card / normal / not sure), **lamination** (only shown when the item isn't stickers or a banner),
@@ -177,19 +173,22 @@ reached, with **Send to bot again** buttons. Any bot or tool with a webhook link
 bot platform…). Note: bots that send WhatsApp messages officially still go through Meta's WhatsApp Business Platform, so
 Meta's per-message fees and one-time template approval apply there.
 
-**Team alerts for new orders** (Links & access → Team alerts):
-- **Email:** list your team's addresses and switch it on — each new order is emailed with its details and an **Open the order**
-  button. On Cloudflare this needs a free Resend key (see *Team email alerts* above); on the Google version it's sent from
-  the Google account that owns the script (about 100 recipients a day).
-- **On each teammate's phone or computer — push notifications:** the first time someone opens the Print Hub on a device
-  (their staff link, the master link or from the Creative Hub) it asks *“Get alerted when a new order comes in?”* — one tap on
-  **Turn on alerts** (and **Allow**) and that device gets a notification for every new order, **even when the app is closed**,
-  like a WhatsApp message. A test notification arrives straight away to confirm it works. Tapping a notification opens that order.
+**New-order alerts** (push notifications — Links & access → New-order alerts shows which devices get them):
+- The first time someone opens the Print Hub on a device (their team link, the master link or from the Creative Hub) it asks
+  *“Get alerted when a new order comes in?”* — one tap on **Turn on alerts** (and **Allow**) and that device gets a notification
+  for every new order, **even when the app is closed**. Each order is its own notification and it **stays in the notification
+  centre until it's opened or swiped away**, like a WhatsApp message (on computers it also stays on screen until clicked).
+  A test notification arrives straight away to confirm it works. Tapping a notification opens that order.
   Switch it on/off any time with **New-order alerts** at the bottom of the menu. Nobody can switch this on for someone else.
   - **iPhone / iPad:** needs iOS 16.4 or newer, and the Print Hub must be **added to the Home Screen** first (Share → Add to
-    Home Screen) — turn alerts on inside that app.
+    Home Screen) — turn alerts on inside that app. To keep the banner on screen until it's dismissed: Settings →
+    Notifications → GIG Print Hub → Banner Style → **Persistent**.
   - **Android:** works in Chrome (installing the app is optional). **Computers:** Chrome, Edge, Safari and Firefox.
-  - Turning off, changing or deleting someone's staff link also stops alerts to their devices.
+  - **Sound:** the phone's own notification sound (websites can't ship a custom sound). On Android you can pick a different
+    tone for these alerts in the phone's notification settings for Chrome / the site. While the Print Hub is open it also
+    plays its own chime.
+  - Turning off, changing or deleting someone's team link also stops alerts to their devices; you can also stop alerts on
+    any device from Links & access.
   - Push notifications are sent by your own Cloudflare server (free, no extra account). On the Google version, alerts only
     appear while the Print Hub is open. The tab title also shows the count, e.g. “(2) GIG Print Hub”.
 - **Bot:** post the `team_message` to your team's WhatsApp or Telegram group.
@@ -197,12 +196,12 @@ Meta's per-message fees and one-time template approval apply there.
 **Install it as an app on your team's phones and computers** — no app store needed. Both the Creative Hub and the Print Hub
 have an **Install app** button at the bottom of the menu (it disappears once installed):
 - **iPhone / iPad (Safari):** Share button ⬆︎ → **Add to Home Screen** → **Add**. The first time the installed app opens, it asks
-  for the admin or master link — paste it once and it's remembered (iPhone keeps home-screen apps separate from Safari).
+  for the team or master link — paste it once and it's remembered (iPhone keeps home-screen apps separate from Safari).
 - **Android (Chrome):** tap **Install app** in the menu, or ⋮ → **Install app**.
 - **Computer (Chrome / Edge):** the install icon at the right of the address bar. **Mac Safari:** File → **Add to Dock**.
 
-The app opens full-screen with its own icon and shows the live order list. New-order pop-ups work while it's open (see
-*Team alerts* above); for alerts when it's closed, use team email or your bot's team group.
+The app opens full-screen with its own icon and shows the live order list, and new-order notifications arrive even when
+it's closed (see *New-order alerts* above).
 
 Artwork and voice notes are stored in the **print/** folder of your file storage; orders are in the **print_orders** table.
 The Print Hub works with the Cloudflare or Google setup (or demo mode) — not with the Supabase option.

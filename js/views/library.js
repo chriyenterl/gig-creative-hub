@@ -45,7 +45,7 @@ export function UsageDialog({ assets, onClose }) {
   const save = async () => {
     setBusy(true);
     try {
-      for (const a of assets) await api.insert('asset_usage', { asset_id: a.id, channel: channel || null, used_on: date, note: note.trim() || null, created_by: getState().user?.email });
+      for (const a of assets) await api.insert('asset_usage', { asset_id: a.id, channel: channel || null, used_on: date, note: note.trim() || null, created_by: getState().user?.email || getState().user?.name });
       await reload('assets'); // the database recalculates the usage counts
       toast(assets.length === 1 ? 'Marked as used.' : `${assets.length} items marked as used.`);
       onClose();

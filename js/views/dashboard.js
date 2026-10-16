@@ -8,7 +8,7 @@ const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
 function greeting(user) {
   const h = new Date().getHours();
   const part = h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
-  const who = getState().team_members.find((m) => m.email.toLowerCase() === (user?.email || '').toLowerCase())?.name;
+  const who = user?.viaLink ? user.name : getState().team_members.find((m) => m.email.toLowerCase() === (user?.email || '').toLowerCase())?.name;
   return who && !/demo/i.test(who) ? `${part}, ${who.split(' ')[0]}` : part;
 }
 

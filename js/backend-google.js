@@ -203,12 +203,11 @@ export function createGoogleBackend(cfg, { portal = false } = {}) {
       regenerate(printKey, which) { return call('printRegenerate', { printKey, which }); },
       setActive(printKey, which, active) { return call('printSetActive', { printKey, which, active }); },
       // One private admin link per staff member.
-      staffAdd(printKey, name) { return call('printStaffAdd', { printKey, name }); },
+      staffAdd(printKey, name) { return call('printStaffAdd', { printKey, name }); }, // Print Hub only on Google
       staffUpdate(printKey, id, patch) { return call('printStaffUpdate', { printKey, id, patch }); },
       staffRegenerate(printKey, id) { return call('printStaffRegenerate', { printKey, id }); },
       staffDelete(printKey, id) { return call('printStaffDelete', { printKey, id }); },
       testNotify(printKey, kind) { return call('printTestNotify', { printKey, kind }); },
-      testTeamEmail(printKey) { return call('printTestTeamEmail', { printKey }); },
       async fileLinks(id) {
         return {
           thumb: `https://drive.google.com/thumbnail?id=${id}&sz=w400`,

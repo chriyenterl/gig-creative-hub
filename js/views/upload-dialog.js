@@ -48,7 +48,7 @@ export function UploadDialog({ onClose, defaults = {} }) {
             tags: parseTags(meta.tags),
             status: meta.status,
             reviewed_at: meta.status === 'approved' ? new Date().toISOString() : null,
-            uploaded_by: getState().user?.email || null,
+            uploaded_by: getState().user?.email || getState().user?.name || null,
           });
         } catch (e) {
           await api.removeFiles([stored]).catch(() => {});

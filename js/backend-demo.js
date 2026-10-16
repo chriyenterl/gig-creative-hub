@@ -242,11 +242,11 @@ function printSeed() {
     // Fixed demo links, so the customer link also works in a private window or another browser on this computer.
     settings: { masterKey: 'demomasterlink', orderKey: 'demoorderlink', orderActive: true, nextNo: 1006,
                 webhookUrl: '', webhookSecret: '', readyMessage: DEFAULT_READY_MESSAGE, newOrderMessage: DEFAULT_NEW_MESSAGE,
-                notifyOnNew: true, notifyOnDone: true, teamEmails: '', teamEmailOn: false, siteUrl: '' },
+                notifyOnNew: true, notifyOnDone: true },
     // One private admin link per staff member.
     staff: [
-      { id: uid(), name: 'Production team', key: 'demoadminlink', active: true, last_used_at: ago(2), created_at: ago(400) },
-      { id: uid(), name: 'Ali', key: 'demoalilink', active: true, last_used_at: null, created_at: ago(30) },
+      { id: uid(), name: 'Production team', key: 'demoadminlink', active: true, hub: false, last_used_at: ago(2), created_at: ago(400) },
+      { id: uid(), name: 'Ali', key: 'demoalilink', active: true, hub: true, last_used_at: null, created_at: ago(30) },
     ],
     questions: DEFAULT_QUESTIONS,
     orders: [
@@ -320,6 +320,13 @@ export function createDemoBackend() {
       async getUser() { return USER; },
       onChange(cb) { setTimeout(() => cb(USER), 0); return () => {}; },
       async signIn() {},
+      // Team links with Creative Hub access (demo: checks the link, then you carry on as the demo user).
+      async signInWithLink(key) {
+        let st = null;
+        try { st = (JSON.parse(localStorage.getItem(PRINT_KEY))?.staff || []).find((x) => x.key === key && x.active); } catch {}
+        if (!st) throw new Error('This team link is no longer valid. Please ask for a new one.');
+        if (!st.hub) throw Object.assign(new Error('This link opens the Print Hub only.'), { code: 'PRINT_ONLY' });
+      },
       async signOut() {},
       async changePassword() {},
       async isTeam() { return true; },
@@ -438,14 +445,7 @@ export function createDemoBackend() {
       const staffName = (n) => { n = String(n || '').trim().slice(0, 60); if (!n) throw new Error("Type the person's name."); return n; };
       const staffFind = (id) => { const x = pload().staff.find((s) => s.id === id); if (!x) throw new Error('That link no longer exists.'); return x; };
       const orderOk = (k) => pload().settings.orderActive && k === pload().settings.orderKey;
-      const settingsOut = () => { const { nextNo, wa, ...rest } = pload().settings; return { teamEmails: '', teamEmailOn: false, ...rest }; };
-      // Demo stand-in for the team email alert (nothing is really sent).
-      const teamEmail = (o, test) => {
-        const st = pload().settings;
-        const at = new Date().toISOString();
-        if (!st.teamEmails) return { event: 'team', ok: false, at, detail: 'No team email addresses saved.' };
-        return { event: 'team', ok: true, at, detail: `Demo mode — would email ${st.teamEmails}${test ? ' a test' : ''} (nothing was really sent).` };
-      };
+      const settingsOut = () => { const { nextNo, wa, teamEmails, teamEmailOn, siteUrl, ...rest } = pload().settings; return rest; };
       const find = (id) => { const o = pload().orders.find((x) => x.id === id); if (!o) throw new Error('That order no longer exists.'); return o; };
       async function notify(kind, o, test) {
         const st = pload().settings;
@@ -496,7 +496,6 @@ export function createDemoBackend() {
             internal_notes: null, created_at: now, updated_at: now };
           d.settings.nextNo += 1;
           d.orders.unshift(order);
-          if (d.settings.teamEmailOn && d.settings.teamEmails) order.history.push(teamEmail(order, false));
           if (d.settings.webhookUrl && d.settings.notifyOnNew) order.history.push(await notify('created', order, false));
           psave();
           return { order_no: order.order_no };
@@ -506,7 +505,7 @@ export function createDemoBackend() {
           const a = actor(key);
           const r = a.role;
           const st = pload().settings;
-          return { role: r, name: a.who, questions: clone(pload().questions), botLinked: !!st.webhookUrl, readyMessage: st.readyMessage,
+          return { role: r, name: a.who, hubLinks: true, questions: clone(pload().questions), botLinked: !!st.webhookUrl, readyMessage: st.readyMessage,
                    newOrderMessage: st.newOrderMessage, notifyOnDone: st.notifyOnDone, storage: demoStorage(),
                    ...(r === 'master' ? { settings: settingsOut(), staff: staffOut() } : {}) };
         },
@@ -566,14 +565,6 @@ export function createDemoBackend() {
           if (input.newOrderMessage !== undefined) st.newOrderMessage = String(input.newOrderMessage || '').trim() || DEFAULT_NEW_MESSAGE;
           if (input.notifyOnNew !== undefined) st.notifyOnNew = !!input.notifyOnNew;
           if (input.notifyOnDone !== undefined) st.notifyOnDone = !!input.notifyOnDone;
-          if (input.teamEmails !== undefined) {
-            const list = String(input.teamEmails || '').split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean);
-            const bad = list.find((x) => !/^\S+@\S+\.\S+$/.test(x));
-            if (bad) throw new Error(`“${bad}” doesn’t look like an email address.`);
-            st.teamEmails = list.join(', ');
-          }
-          if (input.teamEmailOn !== undefined) st.teamEmailOn = !!input.teamEmailOn;
-          if (input.siteUrl) st.siteUrl = String(input.siteUrl).split('#')[0];
           psave();
           return settingsOut();
         },
@@ -592,9 +583,9 @@ export function createDemoBackend() {
           psave();
           return settingsOut();
         },
-        async staffAdd(key, name) {
+        async staffAdd(key, name, hub) {
           needMaster(key);
-          pload().staff.push({ id: uid(), name: staffName(name), key: newToken(), active: true, last_used_at: null, created_at: new Date().toISOString() });
+          pload().staff.push({ id: uid(), name: staffName(name), key: newToken(), active: true, hub: !!hub, last_used_at: null, created_at: new Date().toISOString() });
           psave();
           return staffOut();
         },
@@ -603,6 +594,7 @@ export function createDemoBackend() {
           const x = staffFind(id);
           if (patch.name !== undefined) x.name = staffName(patch.name);
           if (patch.active !== undefined) x.active = !!patch.active;
+          if (patch.hub !== undefined) x.hub = !!patch.hub;
           psave();
           return staffOut();
         },
@@ -622,7 +614,6 @@ export function createDemoBackend() {
           needMaster(key);
           return notify(kind === 'created' ? 'created' : 'completed', { order_no: 'P-TEST', customer_name: 'Test Customer', company: 'Test Co', phone: '+60123456789', summary: 'Flyers', quantity: '500', answers: [] }, true);
         },
-        async testTeamEmail(key) { needMaster(key); await wait(200); return teamEmail({}, true); },
         async fileLinks(id) {
           if (!urlCache.has(id)) {
             const blob = await idb.get(id).catch(() => null);

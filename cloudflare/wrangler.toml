@@ -18,9 +18,3 @@ bucket_name = "gig-hub-files"
 
 [observability]
 enabled = true
-
-# Optional — team email alerts through Resend (resend.com, free plan):
-#   npx wrangler secret put RESEND_API_KEY
-# and, once you've verified your own domain in Resend, set who the emails come from:
-# [vars]
-# MAIL_FROM = "GIG Print Hub <orders@yourdomain.com>"

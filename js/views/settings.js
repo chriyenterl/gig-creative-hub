@@ -1,5 +1,5 @@
 import { html, useState } from '../lib.js';
-import { useStore, api, insertRow, deleteRow, setState } from '../store.js';
+import { useStore, api, insertRow, deleteRow, setState, getState } from '../store.js';
 import { DEMO, MODE } from '../api.js';
 import { CONFIG } from '../../config.js';
 import { fmtBytes, fmtGB } from '../util.js';
@@ -31,6 +31,12 @@ function Team() {
     try { await api.update('team_members', m.id, { password: pw }); toast('Password changed. They\'ll need to sign in again.'); } catch (e) { toastError(e); }
   };
   const me = user?.email?.toLowerCase();
+  if (user?.viaLink) return html`<section class="card">
+    <header class="card-head"><h2>Team members</h2><span class="muted">People who sign in with a password</span></header>
+    <ul class="plain-list">${team_members.map((m) => html`<li key=${m.id}><span><span class="avatar">${(m.name || m.email).slice(0, 1).toUpperCase()}</span>
+      <b>${m.name || m.email}</b></span></li>`)}</ul>
+    <p class="muted small">You're using a team link. Only owners (who sign in with a password) can add or remove people.</p>
+  </section>`;
   return html`<section class="card">
     <header class="card-head"><h2>Team members</h2><span class="muted">People who can open this app</span></header>
     <ul class="plain-list">
@@ -66,8 +72,8 @@ function Account() {
   };
   return html`<section class="card">
     <header class="card-head"><h2>My account</h2></header>
-    <p>Signed in as <b>${user?.email}</b></p>
-    ${!DEMO && html`<div class="inline-form">
+    <p>${user?.viaLink ? html`Signed in with your team link as <b>${user.name}</b>` : html`Signed in as <b>${user?.email}</b>`}</p>
+    ${!DEMO && !user?.viaLink && html`<div class="inline-form">
       <input type="password" placeholder="New password" value=${pw} onInput=${(e) => setPw(e.target.value)} autocomplete="new-password" />
       <button class="btn" onClick=${change}>Change password</button>
     </div>`}
@@ -76,7 +82,7 @@ function Account() {
 }
 
 // Uploads stop at the limit, so the storage bill never goes past it.
-function Storage({ storage }) {
+function Storage({ storage, readOnly }) {
   const [gb, setGb] = useState(String(storage.limit / 1e9));
   const [busy, setBusy] = useState(false);
   const ratio = storage.used / storage.limit;
@@ -95,11 +101,11 @@ function Storage({ storage }) {
       <span style=${{ width: Math.min(100, ratio * 100) + '%' }}></span></div>
     <p class="muted small">New uploads stop when the limit is reached — for the team, creator links and print orders.${MODE === 'cloudflare'
       ? " Keep it at 10 GB and Cloudflare never charges you; above that it's about US$0.015 per GB a month." : ''}</p>
-    <div class="inline-form">
+    ${!readOnly && html`<div class="inline-form">
       <label class="small" for="storage-limit">Limit (GB)</label>
       <input id="storage-limit" class="storage-input" type="number" min="1" step="1" value=${gb} onInput=${(e) => setGb(e.target.value)} />
       <button class="btn" disabled=${busy || Number(gb) * 1e9 === storage.limit} onClick=${save}>${busy ? 'Saving…' : 'Save limit'}</button>
-    </div>
+    </div>`}
   </div>`;
 }
 
@@ -120,7 +126,7 @@ function About() {
       ${MODE === 'cloudflare' && html`<dt>Server</dt><dd class="break">${CONFIG.CLOUDFLARE_API_URL}</dd>`}
       <dt>Files stored</dt><dd>${assets.length} items · ${fmtBytes(total)}</dd>
     </dl>
-    ${storage && html`<${Storage} storage=${storage} />`}
+    ${storage && html`<${Storage} storage=${storage} readOnly=${!!getState().user?.viaLink} />`}
     ${backendLinks && html`<div class="page-actions">
       <a class="btn" href=${backendLinks.sheet} target="_blank" rel="noopener"><${Icon} name="grid" size=${16} />Open the data sheet</a>
       <a class="btn" href=${backendLinks.folder} target="_blank" rel="noopener"><${Icon} name="external" size=${16} />Open files in Drive</a>

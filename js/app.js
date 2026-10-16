@@ -120,8 +120,8 @@ function Shell() {
         <${InstallButton} appName=${CONFIG.BRAND_NAME} />
         <a href=${hrefFor('settings')} class=${'nav-item' + (p0 === 'settings' ? ' active' : '')}><${Icon} name="settings" /><span>Settings</span></a>
         <div class="user-chip">
-          <span class="avatar">${(s.user?.email || '?').slice(0, 1).toUpperCase()}</span>
-          <span class="user-email">${s.user?.email}</span>
+          <span class="avatar">${(s.user?.name || s.user?.email || '?').slice(0, 1).toUpperCase()}</span>
+          <span class="user-email">${s.user?.viaLink ? s.user.name : s.user?.email}</span>
         </div>
       </div>
     </aside>
@@ -135,11 +135,24 @@ function Shell() {
   </div>`;
 }
 
+// A team link with Creative Hub access looks like index.html#k=<code>: sign in with it, then tidy the address.
+let linkError = null;
+async function signInFromLink() {
+  const m = /^#k=([A-Za-z0-9_-]{16,})/.exec(location.hash);
+  if (!m) return;
+  history.replaceState(null, '', location.pathname + location.search + '#/dashboard');
+  if (!api.auth.signInWithLink) { linkError = 'Team links for the Creative Hub need the Cloudflare setup.'; return; }
+  try { await api.auth.signInWithLink(m[1]); } catch (e) {
+    if (e.code === 'PRINT_ONLY') return location.replace('print/index.html#k=' + m[1]); // it's a Print Hub link
+    linkError = e.message;
+  }
+}
+
 function App() {
   const [phase, setPhase] = useState({ id: 'loading' });
 
   useEffect(() => {
-    let lastKey;
+    let lastKey, stop = () => {}, alive = true;
     const evaluate = async (user) => {
       if (!user) return setPhase({ id: 'signedOut' });
       setPhase({ id: 'loading' });
@@ -152,17 +165,21 @@ function App() {
         setPhase({ id: 'error', message: e.message });
       }
     };
-    return api.auth.onChange((user) => {
-      const key = user ? user.id || user.email : '';
-      if (key === lastKey) return;
-      lastKey = key;
-      setTimeout(() => evaluate(user), 0); // don't call the auth client from inside its own callback
+    signInFromLink().then(() => {
+      if (!alive) return;
+      stop = api.auth.onChange((user) => {
+        const key = user ? user.id || user.email : '';
+        if (key === lastKey) return;
+        lastKey = key;
+        setTimeout(() => evaluate(user), 0); // don't call the auth client from inside its own callback
+      });
     });
+    return () => { alive = false; stop(); };
   }, []);
 
   let body;
   if (phase.id === 'loading') body = html`<div class="loading"><div class="spinner"></div></div>`;
-  else if (phase.id === 'signedOut') body = html`<${Login} />`;
+  else if (phase.id === 'signedOut') body = html`<${Login} linkError=${linkError} />`;
   else if (phase.id === 'notTeam') body = html`<${NotTeam} email=${phase.email} />`;
   else if (phase.id === 'error') body = html`<div class="auth-page"><div class="auth-card card">
       <${Brand} /><h1>Couldn't load</h1><p>${phase.message}</p>

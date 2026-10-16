@@ -10,7 +10,11 @@ self.addEventListener('push', (e) => {
   try { d = e.data ? e.data.json() : {}; } catch {}
   e.waitUntil(self.registration.showNotification(d.title || 'New print order', {
     body: d.body || 'Open the Print Hub to see it.',
-    tag: d.tag || 'gig-order',
+    tag: d.tag || 'gig-order',      // one notification per order — they pile up like messages
+    renotify: true,                 // sound/vibrate even if one with the same tag is already showing
+    requireInteraction: true,       // computers: stays on screen until clicked or closed
+    vibrate: [200, 100, 200],
+    timestamp: d.at || Date.now(),
     icon: new URL('../icons/print-192.png', self.registration.scope).href,
     badge: new URL('../icons/print-192.png', self.registration.scope).href,
     data: { url: d.orderId ? 'index.html#/order/' + d.orderId : 'index.html' },

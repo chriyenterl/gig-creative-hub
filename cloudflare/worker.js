@@ -16,14 +16,13 @@
  *    GET  /f/<key>             view a file (?dl=1 downloads it); supports video seeking
  *
  *  Setup and deploy: see README.md → "Going live on Cloudflare".
- *  Optional secrets: RESEND_API_KEY (+ var MAIL_FROM) for team email alerts.
  * ============================================================================
  */
 
 const TOKEN_DAYS = 30;           // how long a team login lasts
 const PBKDF2_ROUNDS = 20000;     // password hashing strength (kept modest for the free plan's CPU limit)
 const CHUNK = 10 * 1024 * 1024;  // upload part size — big files are sent in pieces of this size
-const SCHEMA_V = '3';            // bump when SCHEMA changes so new columns get added
+const SCHEMA_V = '4';            // bump when SCHEMA changes so new columns get added
 const GB = 1e9;                  // storage is counted the way Cloudflare bills it (1 GB = 1,000,000,000 bytes)
 const DEFAULT_LIMIT_GB = 10;     // uploads stop here (R2's free allowance) — change it in Settings
 
@@ -46,9 +45,10 @@ const SCHEMA = {
   print_orders: { cols: ['id', 'order_no', 'status', 'customer_name', 'company', 'phone', 'email', 'summary', 'quantity',
                          'due_date', 'answers', 'history', 'internal_notes', 'created_at', 'updated_at'],
                   json: ['answers', 'history'] },
-  print_staff:  { cols: ['id', 'name', 'link_key', 'is_active', 'last_used_at', 'created_at'], bool: ['is_active'] },
+  // Team links: hub_access = true opens the Creative Hub as well as the Print Hub.
+  print_staff:  { cols: ['id', 'name', 'link_key', 'is_active', 'hub_access', 'last_used_at', 'created_at'], bool: ['is_active', 'hub_access'] },
   // Phones and computers that get a notification for every new order (even with the app closed).
-  push_subs:    { cols: ['id', 'endpoint', 'p256dh', 'auth', 'who', 'access', 'ref', 'key_hash', 'created_at'] },
+  push_subs:    { cols: ['id', 'endpoint', 'p256dh', 'auth', 'who', 'device', 'access', 'ref', 'key_hash', 'created_at'] },
 };
 
 const DEFAULTS = {
@@ -59,7 +59,7 @@ const DEFAULTS = {
   assets:       { category: 'final', media_type: 'other', source: 'team', tags: [], status: 'pending', use_count: 0 },
   asset_usage:  {},
   print_orders: { status: 'new', history: [] },
-  print_staff:  { is_active: true },
+  print_staff:  { is_active: true, hub_access: false },
   push_subs:    {},
 };
 
@@ -145,6 +145,7 @@ async function route(req, ctx) {
   if (a === 'status') return { needsSetup: (await count('team_members')) === 0 };
   if (a === 'setupAdmin') return setupAdmin(req);
   if (a === 'login') return login(req);
+  if (a === 'linkLogin') return linkLogin(req.linkKey);
   if (a === 'linkInfo') return linkInfo(req.linkToken);
   if (a === 'linkStartUpload') return linkStartUpload(req);
   if (a === 'linkSubmit') return linkSubmit(req);
@@ -153,6 +154,10 @@ async function route(req, ctx) {
 
   // ── Team only ──
   const me = await verify(req.token);
+  const ownersOnly = (what) => { if (me.viaLink) fail(`Only owners (who sign in with a password) can ${what}.`); };
+  if (a === 'changePassword') ownersOnly('change passwords');
+  if (a === 'setStorageLimit') ownersOnly('change the storage limit');
+  if (['insert', 'update', 'updateMany', 'remove', 'removeMany'].includes(a) && req.table === 'team_members') ownersOnly('manage team members');
   switch (a) {
     case 'me': return publicMember(me);
     case 'changePassword': return changePassword(me, req.password);
@@ -371,7 +376,7 @@ async function apiInsert(t, row, me) {
     if (!(await FILES.head(key))) fail('We could not find the uploaded file. Please try again.');
   }
   if (t === 'upload_links') { row.token = newKey(); delete row.folder_id; }
-  if (t === 'asset_usage' && !row.created_by) row.created_by = me.email;
+  if (t === 'asset_usage' && !row.created_by) row.created_by = me.email || me.name;
   const created = await insertRow(t, row);
   if (t === 'asset_usage') await syncUsage(created.asset_id);
   return clean(t, created);
@@ -488,6 +493,13 @@ async function verify(token) {
   let data;
   try { data = JSON.parse(new TextDecoder().decode(fromB64url(parts[0]))); } catch { fail('Please sign in again.', 'AUTH'); }
   if (!data.x || data.x < Date.now()) fail('Your session expired. Please sign in again.', 'AUTH');
+  if (data.s) { // signed in with a team link: valid while that link is on, unchanged and still has Creative Hub access
+    const st = await getRow('print_staff', data.s);
+    if (!st || !st.is_active || !st.hub_access || (await sha256(st.link_key)).slice(0, 16) !== data.k) {
+      fail('This team link was changed or turned off. Please ask for a new one.', 'AUTH');
+    }
+    return linkUser(st);
+  }
   const m = await findMember(data.e);
   if (!m || (Number(m.session_v) || 0) !== data.v) fail('Please sign in again.', 'AUTH');
   return m;
@@ -501,7 +513,31 @@ async function findMember(email) {
 }
 
 function publicMember(m) {
+  if (m.viaLink) return { id: m.id, email: null, name: m.name, created_at: m.created_at, links: null, viaLink: true };
   return { id: m.id, email: m.email, name: m.name, created_at: m.created_at, links: null };
+}
+
+// Someone using a team link with Creative Hub access (no account, no password).
+const linkUser = (st) => ({ id: 'link:' + st.id, email: null, name: st.name, created_at: st.created_at, viaLink: true, staffId: st.id, linkKey: st.link_key });
+
+async function staffByKey(key) {
+  if (!key) return null;
+  const r = await DB.prepare('SELECT * FROM print_staff WHERE link_key = ?').bind(String(key)).first();
+  return r ? rowOut('print_staff', r) : null;
+}
+async function touchStaff(st) { // "last opened" — written at most once an hour
+  if (!st.last_used_at || Date.now() - new Date(st.last_used_at).getTime() > 3600e3) {
+    await DB.prepare('UPDATE print_staff SET last_used_at = ? WHERE id = ?').bind(nowIso(), st.id).run();
+  }
+}
+
+async function linkLogin(key) {
+  const st = await staffByKey(key);
+  if (!st || !st.is_active) fail('This team link is no longer valid. Please ask for a new one.');
+  if (!st.hub_access) fail('This link opens the Print Hub only.', 'PRINT_ONLY');
+  await touchStaff(st);
+  const payload = b64url(enc.encode(JSON.stringify({ s: st.id, k: (await sha256(st.link_key)).slice(0, 16), x: Date.now() + TOKEN_DAYS * 86400000 })));
+  return { token: payload + '.' + await sign(payload), user: publicMember(linkUser(st)) };
 }
 
 async function setupAdmin(req) {
@@ -826,7 +862,6 @@ async function printSettings() {
   if (!s.newOrderMessage) s.newOrderMessage = DEFAULT_NEW_MESSAGE;
   if (s.notifyOnNew === undefined) s.notifyOnNew = true;
   if (s.notifyOnDone === undefined) s.notifyOnDone = true;
-  if (s.teamEmails === undefined) { s.teamEmails = ''; s.teamEmailOn = false; s.siteUrl = ''; }
   if (s.adminKey) { // older versions had one shared admin link — keep it working as a staff link
     const exists = await DB.prepare('SELECT 1 FROM print_staff WHERE link_key = ?').bind(s.adminKey).first();
     if (!exists) {
@@ -853,22 +888,24 @@ async function printActor(req) {
   const s = await printSettings();
   if (req.printKey && sameText(req.printKey, s.masterKey)) return { role: 'master', who: 'Master', access: 'master', keyHash: await sha256(s.masterKey) };
   if (req.printKey) {
-    const r = await DB.prepare('SELECT * FROM print_staff WHERE link_key = ?').bind(String(req.printKey)).first();
-    const st = r && rowOut('print_staff', r);
+    const st = await staffByKey(req.printKey);
     if (st && st.is_active) {
-      if (!st.last_used_at || Date.now() - new Date(st.last_used_at).getTime() > 3600e3) {
-        await DB.prepare('UPDATE print_staff SET last_used_at = ? WHERE id = ?').bind(nowIso(), st.id).run();
-      }
+      await touchStaff(st);
       return { role: 'admin', who: st.name || 'Admin', access: 'staff', ref: st.id, keyHash: await sha256(st.link_key) };
     }
   }
-  if (req.token) { const m = await verify(req.token); return { role: 'master', who: m.name || m.email, access: 'team', ref: m.email }; }
+  if (req.token) {
+    const m = await verify(req.token);
+    if (m.viaLink) return { role: 'admin', who: m.name, access: 'staff', ref: m.staffId, keyHash: await sha256(m.linkKey) };
+    return { role: 'master', who: m.name || m.email, access: 'team', ref: m.email };
+  }
   fail('This access link is no longer valid. Please ask for a new one.', 'PRINT_AUTH');
 }
 
 // ── Staff links: one private admin link per person, no account needed ──
 async function staffList() {
-  return (await readTable('print_staff')).map((x) => ({ id: x.id, name: x.name, key: x.link_key, active: x.is_active, last_used_at: x.last_used_at, created_at: x.created_at }));
+  return (await readTable('print_staff')).map((x) => ({ id: x.id, name: x.name, key: x.link_key, active: x.is_active, hub: x.hub_access,
+    last_used_at: x.last_used_at, created_at: x.created_at }));
 }
 
 const cleanStaffName = (name) => {
@@ -877,9 +914,9 @@ const cleanStaffName = (name) => {
   return n;
 };
 
-async function staffAdd(name) {
-  if ((await count('print_staff')) >= 200) fail('You can have up to 200 staff links.');
-  await insertRow('print_staff', { name: cleanStaffName(name), link_key: newKey(), is_active: true });
+async function staffAdd(name, hub) {
+  if ((await count('print_staff')) >= 200) fail('You can have up to 200 team links.');
+  await insertRow('print_staff', { name: cleanStaffName(name), link_key: newKey(), is_active: true, hub_access: !!hub });
   return staffList();
 }
 
@@ -887,6 +924,7 @@ async function staffUpdate(id, patch) {
   const p = {};
   if (patch.name !== undefined) p.name = cleanStaffName(patch.name);
   if (patch.active !== undefined) p.is_active = !!patch.active;
+  if (patch.hub !== undefined) p.hub_access = !!patch.hub;
   await updateRow('print_staff', String(id || ''), p);
   return staffList();
 }
@@ -924,44 +962,41 @@ async function printRoute(req, ctx) {
     case 'printSaveSettings': needMaster(); return printSaveSettings(req.settings || {});
     case 'printRegenerate': needMaster(); return printRegenerate(req.which);
     case 'printSetActive': needMaster(); return printSetActive(req.which, !!req.active);
-    case 'printStaffAdd': needMaster(); return staffAdd(req.name);
+    case 'printStaffAdd': needMaster(); return staffAdd(req.name, req.hub);
     case 'printStaffUpdate': needMaster(); return staffUpdate(req.id, req.patch || {});
     case 'printStaffRegenerate': needMaster(); return staffRegenerate(req.id);
     case 'printStaffDelete': needMaster(); await deleteRows('print_staff', [String(req.id || '')]); return staffList();
-    case 'printPushSubscribe': return pushSubscribe(actor, req.subscription || {});
+    case 'printPushSubscribe': return pushSubscribe(actor, req.subscription || {}, req.device);
     case 'printPushUnsubscribe': await DB.prepare('DELETE FROM push_subs WHERE endpoint = ?').bind(String(req.endpoint || '')).run(); return true;
     case 'printPushTest': return pushTest(req.endpoint);
+    case 'printPushRemove': needMaster(); await deleteRows('push_subs', [String(req.id || '')]); return pushDevices();
     case 'printTestNotify': needMaster(); return printTestNotify(req.kind);
-    case 'printTestTeamEmail': needMaster(); return teamEmail({ order_no: 'P-TEST', customer_name: 'Test Customer', company: 'Test Co',
-      phone: '+60123456789', summary: 'Flyers', quantity: '500', due_date: null, answers: [], id: '' }, true);
   }
   fail('Unknown action: ' + a);
 }
 
 async function afterNewOrder(created) {
   const st = await printSettings();
-  const entries = [];
-  if (st.teamEmailOn && st.teamEmails) entries.push(await teamEmail(created, false));
-  if (st.webhookUrl && st.notifyOnNew) entries.push(await notify('created', created, false));
   await pushNewOrder(created);
-  if (!entries.length) return;
+  if (!(st.webhookUrl && st.notifyOnNew)) return;
+  const entry = await notify('created', created, false);
   const o = await getRow('print_orders', created.id);
-  if (o) await updateRow('print_orders', o.id, { history: (o.history || []).concat(entries) });
+  if (o) await updateRow('print_orders', o.id, { history: (o.history || []).concat([entry]) });
 }
 
 async function printMe(actor) {
   const s = await printSettings();
   const role = actor.role;
   const out = { role, name: actor.who, questions: await printQuestions(), botLinked: !!s.webhookUrl, readyMessage: s.readyMessage,
-                newOrderMessage: s.newOrderMessage, notifyOnDone: s.notifyOnDone, emailReady: !!ENV.RESEND_API_KEY,
+                newOrderMessage: s.newOrderMessage, notifyOnDone: s.notifyOnDone, hubLinks: true,
                 pushKey: (await vapid()).publicKey,
                 storage: await storageInfo() };
   if (role === 'master') {
     out.staff = await staffList();
+    out.devices = await pushDevices();
     out.settings = { masterKey: s.masterKey, orderKey: s.orderKey, orderActive: s.orderActive,
                      webhookUrl: s.webhookUrl, webhookSecret: s.webhookSecret, readyMessage: s.readyMessage,
-                     newOrderMessage: s.newOrderMessage, notifyOnNew: s.notifyOnNew, notifyOnDone: s.notifyOnDone,
-                     teamEmails: s.teamEmails, teamEmailOn: s.teamEmailOn };
+                     newOrderMessage: s.newOrderMessage, notifyOnNew: s.notifyOnNew, notifyOnDone: s.notifyOnDone };
   }
   return out;
 }
@@ -1087,13 +1122,6 @@ async function printSaveSettings(input) {
   if (input.newOrderMessage !== undefined) s.newOrderMessage = String(input.newOrderMessage || '').trim() || DEFAULT_NEW_MESSAGE;
   if (input.notifyOnNew !== undefined) s.notifyOnNew = !!input.notifyOnNew;
   if (input.notifyOnDone !== undefined) s.notifyOnDone = !!input.notifyOnDone;
-  if (input.teamEmails !== undefined) {
-    const list = String(input.teamEmails || '').split(/[,;\s]+/).map((e) => e.trim()).filter(Boolean);
-    list.forEach((e) => { if (!/^\S+@\S+\.\S+$/.test(e)) fail('“' + e + '” doesn’t look like an email address.'); });
-    s.teamEmails = list.join(', ');
-  }
-  if (input.teamEmailOn !== undefined) s.teamEmailOn = !!input.teamEmailOn;
-  if (input.siteUrl && /^https?:\/\//.test(input.siteUrl)) s.siteUrl = String(input.siteUrl).split('#')[0];
   await savePrintSettings(s);
   return (await printMe({ role: 'master' })).settings;
 }
@@ -1196,44 +1224,6 @@ function printTestNotify(kind) {
   return notify(kind === 'created' ? 'created' : 'completed', sample, true);
 }
 
-// ── Team alert by email (through Resend — set the RESEND_API_KEY secret to turn it on) ──
-async function teamEmail(o, test) {
-  const s = await printSettings();
-  const at = nowIso();
-  const to = String(s.teamEmails || '').split(/,\s*/).filter(Boolean);
-  if (!to.length) return { event: 'team', ok: false, at, detail: 'No team email addresses saved.' };
-  if (!ENV.RESEND_API_KEY) return { event: 'team', ok: false, at, detail: 'Email sending isn\'t set up yet (see README → Team email alerts).' };
-  const esc = (t) => String(t == null ? '' : t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  const rows = (o.answers || []).filter((a) => !a.hidden && a.value !== null && a.value !== '').map((a) => {
-    let v = a.value;
-    if (a.type === 'file') v = v.map((f) => f.name).join(', ');
-    else if (a.type === 'voice_text') v = [v.text, (v.files || []).length ? '(voice note attached)' : ''].filter(Boolean).join(' ');
-    else if (Array.isArray(v)) v = v.join(', ');
-    return '<tr><td style="color:#777;padding:4px 12px 4px 0;vertical-align:top">' + esc(a.label) + '</td><td style="padding:4px 0"><b>' + esc(v) + '</b></td></tr>';
-  }).join('');
-  const link = s.siteUrl && o.id ? s.siteUrl + '#/order/' + o.id : '';
-  const html = '<div style="font-family:Arial,sans-serif;font-size:14px;color:#1d1033">' +
-    '<p style="font-size:16px"><b>' + esc(teamMessage(o)) + '</b></p>' +
-    (test ? '<p style="color:#b00">This is a test email from GIG Print Hub.</p>' : '') +
-    (rows ? '<table style="border-collapse:collapse;margin:8px 0 16px">' + rows + '</table>' : '') +
-    (link ? '<p><a href="' + esc(link) + '" style="background:#ff3d7f;color:#fff;padding:10px 16px;border-radius:999px;text-decoration:none">Open the order</a></p>' : '') +
-    '</div>';
-  try {
-    const res = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: { Authorization: 'Bearer ' + ENV.RESEND_API_KEY, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: ENV.MAIL_FROM || 'GIG Print Hub <onboarding@resend.dev>', to,
-        subject: (test ? '[TEST] ' : '') + teamMessage(o), html, text: teamMessage(o) + (link ? '\n\n' + link : '') }),
-      signal: AbortSignal.timeout(15000),
-    });
-    if (res.ok) return { event: 'team', ok: true, at, detail: 'Emailed ' + to.join(', ') + '.' };
-    const why = (await res.text().catch(() => '')).slice(0, 150);
-    return { event: 'team', ok: false, at, detail: 'Could not send the team email (' + res.status + ')' + (why ? ': ' + why : '.') };
-  } catch (e) {
-    return { event: 'team', ok: false, at, detail: 'Could not send the team email: ' + String((e && e.message) || e).slice(0, 150) };
-  }
-}
-
 // ════════════════════════════════════════════════════════════════════════════
 //  PUSH NOTIFICATIONS — new-order alerts on phones even when the app is closed
 //  Standard Web Push (RFC 8030/8291/8292): this server signs (VAPID) and encrypts each
@@ -1317,7 +1307,7 @@ async function sendPush(sub, data) {
 
 const validB64 = (v, min, max) => typeof v === 'string' && /^[A-Za-z0-9_-]+=*$/.test(v) && v.length >= min && v.length <= max;
 
-async function pushSubscribe(actor, sub) {
+async function pushSubscribe(actor, sub, device) {
   const endpoint = String(sub.endpoint || '');
   let url;
   try { url = new URL(endpoint); } catch { fail('That device can\'t receive notifications.'); }
@@ -1327,8 +1317,15 @@ async function pushSubscribe(actor, sub) {
   if (!validB64(keys.p256dh, 80, 100) || !validB64(keys.auth, 16, 30)) fail('That device can\'t receive notifications.');
   if ((await count('push_subs')) >= 500) fail('Too many devices have alerts turned on. Turn some off first.');
   await DB.prepare('DELETE FROM push_subs WHERE endpoint = ?').bind(endpoint).run();
-  await insertRow('push_subs', { endpoint, p256dh: keys.p256dh, auth: keys.auth, who: actor.who, access: actor.access, ref: actor.ref || null, key_hash: actor.keyHash || null });
+  await insertRow('push_subs', { endpoint, p256dh: keys.p256dh, auth: keys.auth, who: actor.who, device: String(device || '').slice(0, 40) || null,
+    access: actor.access, ref: actor.ref || null, key_hash: actor.keyHash || null });
   return true;
+}
+
+// Which phones/computers get new-order alerts (for the master's Links & access page).
+async function pushDevices() {
+  await allowedSubs(); // tidies away devices whose link was changed or deleted
+  return (await readTable('push_subs')).map((x) => ({ id: x.id, who: x.who, device: x.device, since: x.created_at }));
 }
 
 async function pushTest(endpoint) {
@@ -1363,6 +1360,6 @@ async function pushNewOrder(o) {
   const who = (o.customer_name || 'A customer') + (o.company ? ` (${o.company})` : '');
   const what = [o.summary, o.quantity ? '× ' + o.quantity : ''].filter(Boolean).join(' ');
   const due = dueText(o.due_date);
-  const data = { title: `New order ${o.order_no}`, body: [who, what, due ? 'due ' + due : ''].filter(Boolean).join(' — '), orderId: o.id, tag: o.id };
+  const data = { title: `New order ${o.order_no}`, body: [who, what, due ? 'due ' + due : ''].filter(Boolean).join(' — '), orderId: o.id, tag: o.id, at: Date.now() };
   await Promise.all(subs.map((sub) => sendPush(sub, data)));
 }

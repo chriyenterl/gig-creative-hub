@@ -55,7 +55,7 @@ export function createCloudflareBackend(cfg, { portal = false } = {}) {
     }
     if (!j.ok) {
       if (j.code === 'AUTH' && token) { token = null; saveToken(null); user = null; emit(); }
-      throw new Error(j.error || 'Something went wrong.');
+      throw Object.assign(new Error(j.error || 'Something went wrong.'), { code: j.code || null });
     }
     return j.data;
   }
@@ -114,6 +114,11 @@ export function createCloudflareBackend(cfg, { portal = false } = {}) {
         const r = await call('login', { email, password });
         token = r.token; saveToken(token); user = r.user; emit();
       },
+      // Team links with Creative Hub access sign people in without an account.
+      async signInWithLink(linkKey) {
+        const r = await call('linkLogin', { linkKey });
+        token = r.token; saveToken(token); user = r.user; emit();
+      },
       async signOut() { token = null; saveToken(null); user = null; emit(); },
       async changePassword(password) {
         const r = await call('changePassword', { password });
@@ -167,16 +172,16 @@ export function createCloudflareBackend(cfg, { portal = false } = {}) {
       regenerate(printKey, which) { return call('printRegenerate', { printKey, which }); },
       setActive(printKey, which, active) { return call('printSetActive', { printKey, which, active }); },
       // One private admin link per staff member.
-      staffAdd(printKey, name) { return call('printStaffAdd', { printKey, name }); },
+      staffAdd(printKey, name, hub) { return call('printStaffAdd', { printKey, name, hub }); },
       staffUpdate(printKey, id, patch) { return call('printStaffUpdate', { printKey, id, patch }); },
       staffRegenerate(printKey, id) { return call('printStaffRegenerate', { printKey, id }); },
       staffDelete(printKey, id) { return call('printStaffDelete', { printKey, id }); },
       // Push notifications: new-order alerts on this device, even when the app is closed.
-      pushSubscribe(printKey, subscription) { return call('printPushSubscribe', { printKey, subscription }); },
+      pushSubscribe(printKey, subscription, device) { return call('printPushSubscribe', { printKey, subscription, device }); },
+      pushRemove(printKey, id) { return call('printPushRemove', { printKey, id }); },
       pushUnsubscribe(printKey, endpoint) { return call('printPushUnsubscribe', { printKey, endpoint }); },
       pushTest(printKey, endpoint) { return call('printPushTest', { printKey, endpoint }); },
       testNotify(printKey, kind) { return call('printTestNotify', { printKey, kind }); },
-      testTeamEmail(printKey) { return call('printTestTeamEmail', { printKey }); },
       async fileLinks(key) {
         const url = fileUrl(key);
         return { thumb: url, open: url, download: url + '?dl=1', preview: url };

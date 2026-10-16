@@ -12,7 +12,31 @@ export function Brand({ small }) {
   </span>`;
 }
 
-export function Login() {
+// Paste a team link (an installed iPhone app doesn't share Safari's memory, so it needs the link once).
+function PasteTeamLink() {
+  const [v, setV] = useState('');
+  const [busy, setBusy] = useState(false);
+  if (!api.auth.signInWithLink) return null;
+  const go = async () => {
+    const m = /#k=([A-Za-z0-9_-]{16,})/.exec(v.trim());
+    if (!m) return toastError(new Error('That doesn\'t look like a team link. Copy the whole link you were sent.'));
+    if (/\/print\//.test(v)) return location.replace('print/index.html#k=' + m[1]);
+    setBusy(true);
+    try { await api.auth.signInWithLink(m[1]); } catch (e) {
+      if (e.code === 'PRINT_ONLY') return location.replace('print/index.html#k=' + m[1]);
+      toastError(e); setBusy(false);
+    }
+  };
+  return html`<div class="paste-link">
+    <p class="muted small">Have a team link? Paste it here:</p>
+    <div class="inline-form">
+      <input value=${v} placeholder="https://…#k=…" aria-label="Team link" onInput=${(e) => setV(e.target.value)} />
+      <button type="button" class="btn" disabled=${busy || !v.trim()} onClick=${go}>Open</button>
+    </div>
+  </div>`;
+}
+
+export function Login({ linkError }) {
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
@@ -44,6 +68,7 @@ export function Login() {
         <h1>${firstRun ? 'Welcome! Create your admin account' : 'Welcome back'}</h1>
         <p class="muted">${firstRun ? 'This is the first sign-in, so this account becomes the owner. You can add teammates later in Settings.' : 'Sign in to your team workspace.'}</p>
       </div>
+      ${linkError && html`<p class="storage-banner full"><${Icon} name="alert" size=${16} /><span>${linkError}</span></p>`}
       ${sent ? html`<p class="notice"><${Icon} name="mail" size=${16} /> Check your inbox — we sent a sign-in link to <b>${email}</b>.</p>` : html`
         ${firstRun && html`<label class="field"><span class="field-label">Your name</span>
           <input autocomplete="name" value=${name} onInput=${(e) => setName(e.target.value)} /></label>`}
@@ -53,6 +78,7 @@ export function Login() {
           <input type="password" autocomplete=${firstRun ? 'new-password' : 'current-password'} value=${password} onInput=${(e) => setPassword(e.target.value)} /></label>
         <button class="btn btn-primary btn-block btn-lg" disabled=${busy || !password}>${busy ? 'One moment…' : firstRun ? 'Create account' : 'Sign in'}</button>
         ${api.auth.magicLink && !firstRun && html`<button type="button" class="btn btn-ghost btn-block" disabled=${busy} onClick=${magic}>Email me a sign-in link instead</button>`}`}
+      ${!firstRun && html`<${PasteTeamLink} />`}
       <p class="muted small center">Team access only. Creators: please use the private upload link you were sent.</p>
     </form>
   </div>`;

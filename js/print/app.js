@@ -33,7 +33,7 @@ addEventListener('hashchange', () => { if (takeKeyFromLink()) location.reload();
 const linkFor = (page, key) => new URL(page === 'order' ? 'order.html#' + key : 'index.html#k=' + key, location.href.split('#')[0]).href;
 
 // ── Tiny store ─────────────────────────────────────────────────────────────
-let P = { loaded: false, role: null, name: '', staff: [], pushKey: null, questions: [], settings: null, orders: [], botLinked: false, readyMessage: '', newOrderMessage: '', notifyOnDone: true, emailReady: true };
+let P = { loaded: false, role: null, name: '', staff: [], devices: [], hubLinks: false, pushKey: null, questions: [], settings: null, orders: [], botLinked: false, readyMessage: '', newOrderMessage: '', notifyOnDone: true };
 const subs = new Set();
 const setP = (patch) => { P = { ...P, ...patch }; subs.forEach((f) => f(P)); };
 function usePrint() {
@@ -53,18 +53,25 @@ async function popup(title, body, orderId) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return false;
   const url = orderId ? 'index.html#/order/' + orderId : 'index.html';
   try {
-    const n = new Notification(title, { body, tag: orderId || 'gig-alert' });
+    const n = new Notification(title, { body, tag: orderId || 'gig-alert', requireInteraction: true });
     n.onclick = () => { window.focus(); if (orderId) go('order/' + orderId); n.close(); };
     return true;
   } catch {
     const reg = await swReady; // e.g. Android Chrome
     if (!reg) return false;
-    await reg.showNotification(title, { body, tag: orderId || 'gig-alert', data: { url } });
+    await reg.showNotification(title, { body, tag: orderId || 'gig-alert', requireInteraction: true, vibrate: [200, 100, 200], data: { url } });
     return true;
   }
 }
 // ── Push: alerts even when the app is closed (Cloudflare setup; iPhone needs iOS 16.4+ and the app on the Home Screen) ──
 const isIPhone = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const deviceName = () => {
+  const ua = navigator.userAgent;
+  if (/iPhone/.test(ua)) return 'iPhone';
+  if (/iPad/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) return 'iPad';
+  if (/Android/.test(ua)) return /Mobile/.test(ua) ? 'Android phone' : 'Android tablet';
+  return /Mac/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows PC' : 'Computer';
+};
 const canPush = () => !!(P.pushKey && api.print.pushSubscribe && 'PushManager' in window && 'Notification' in window && 'serviceWorker' in navigator);
 const keyBytes = (b64) => Uint8Array.from(atob(b64.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (b64.length % 4)) % 4)), (c) => c.charCodeAt(0));
 let pushActive = false;
@@ -80,7 +87,7 @@ async function syncPush(create) {
     if (sub && have && (have.length !== want.length || have.some((b, i) => b !== want[i]))) { await sub.unsubscribe(); sub = null; } // server keys changed
     if (!sub && create) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: want });
     if (!sub) return null;
-    await api.print.pushSubscribe(getKey(), sub.toJSON());
+    await api.print.pushSubscribe(getKey(), sub.toJSON(), deviceName());
     pushActive = true;
     return sub;
   } catch { return null; }
@@ -550,37 +557,27 @@ function MessagesCard() {
   </section>`;
 }
 
-function TeamAlertsCard() {
-  const pick = (s) => ({ teamEmails: s.teamEmails || '', teamEmailOn: !!s.teamEmailOn });
-  const siteUrl = new URL('index.html', location.href.split('#')[0]).href;
-  const { settings, d, set, dirty, busy, save } = useSaver(pick);
-  const test = async () => {
-    try { const r = await api.print.testTeamEmail(getKey()); toast(r.detail, r.ok ? 'ok' : 'error'); } catch (e) { toastError(e); }
+// Which phones and computers get a notification for every new order.
+function AlertsCard() {
+  const { devices, pushKey } = usePrint();
+  const remove = async (d) => {
+    if (!(await confirmDialog({ title: `Stop alerts on ${d.who}'s ${d.device || 'device'}?`, message: 'That device stops getting new-order notifications. They can turn alerts on again from the menu.', confirmLabel: 'Stop alerts', danger: true }))) return;
+    try { setP({ devices: await api.print.pushRemove(getKey(), d.id) }); toast('Alerts stopped on that device.'); } catch (e) { toastError(e); }
   };
   return html`<section class="card bot-card">
-    <header class="card-head"><h2>Team alerts — new orders</h2>
-      <${Pill} tone=${settings.teamEmailOn && settings.teamEmails ? 'good' : 'neutral'}>${settings.teamEmailOn && settings.teamEmails ? 'Email alerts on' : 'Email alerts off'}<//></header>
-    <p class="muted small">Let your in-house team know the moment an order comes in:</p>
-    <ul class="alert-ways small">
-      <li><b>Email</b> — everyone below gets the order details and an “Open the order” button${api.mode === 'google' ? " (sent from your Google account, so it's free)" : ''}.</li>
-      <li><b>On each teammate's device</b> — the Print Hub asks each person the first time they open it (they can also use <b>New-order alerts</b>
-        at the bottom of the menu): a chime and a pop-up while the Print Hub is open. Works on computers and Android; on iPhones use email or your bot.</li>
-      <li><b>Your bot</b> — every new order it receives includes a ready-made <code>team_message</code> it can post to your team's WhatsApp or Telegram group.</li>
-    </ul>
-    ${!P.emailReady && html`<p class="info-box"><${Icon} name="alert" size=${16} /><span>Email sending isn't connected yet — add a free Resend key to the server first
-      (README → <b>Team email alerts</b>). Device alerts and your bot work without it.</span></p>`}
-    <div class="form-grid">
-      <${Field} label="Team email addresses" hint="Separate with commas" wide>
-        <input value=${d.teamEmails} placeholder="production@gig.com, boss@gig.com" onInput=${(e) => set('teamEmails')(e.target.value)} /><//>
-    </div>
-    <div class="switch-list">
-      <label class="switch-row"><span class="switch"><input type="checkbox" checked=${d.teamEmailOn} onChange=${(e) => set('teamEmailOn')(e.target.checked)} /><span></span></span>
-        <span>Email the team when a new order comes in</span></label>
-    </div>
-    <div class="page-actions">
-      <button class="btn btn-primary" disabled=${!dirty || busy} onClick=${() => save({ ...d, siteUrl })}>${busy ? 'Saving…' : 'Save team alerts'}</button>
-      <button class="btn" disabled=${!settings.teamEmails || dirty} onClick=${test}><${Icon} name="mail" size=${16} />Send a test email</button>
-    </div>
+    <header class="card-head"><h2>New-order alerts</h2>
+      ${pushKey && html`<${Pill} tone=${devices.length ? 'good' : 'neutral'}>${devices.length} ${devices.length === 1 ? 'device' : 'devices'}<//>`}</header>
+    <p class="muted small">${pushKey
+      ? html`Everyone with a team link — and you — can get a notification on their phone for every new order, even when the app is closed.
+        It stays in their notification centre until they open it, like a WhatsApp message. Each person turns it on once on their own device:
+        <b>New-order alerts</b> at the bottom of the menu (on iPhone, add the Print Hub to the Home Screen first).`
+      : html`Each person can turn on <b>New-order alerts</b> at the bottom of the menu: a chime and a pop-up while the Print Hub is open.`}</p>
+    ${pushKey && (devices.length
+      ? html`<ul class="plain-list device-list">${devices.map((d) => html`<li key=${d.id}>
+          <span><${Icon} name="bell" size=${15} /> <b>${d.who || 'Someone'}</b><span class="muted small"> · ${d.device || 'device'} · since ${fmtDate(d.since)}</span></span>
+          <button class="icon-btn" aria-label="Stop alerts on this device" data-tip="Stop alerts on this device" onClick=${() => remove(d)}><${Icon} name="trash" size=${15} /></button>
+        </li>`)}</ul>`
+      : html`<p class="muted small">No devices yet — once someone turns alerts on, their phone shows up here.</p>`)}
   </section>`;
 }
 
@@ -636,7 +633,7 @@ function Access() {
   };
   const toggle = (which, active) => act(() => api.print.setActive(getKey(), which, !active), active ? 'Link disabled.' : 'Link enabled.');
   return html`
-    <${PageHead} title="Links & access" sub="Customers order through one shared link, each staff member has their own link, and master runs everything." />
+    <${PageHead} title="Links & access" sub="Customers order through one shared link, each team member has their own link, and master runs everything." />
     <div class="access-grid access-grid-2">
       <${LinkCard} title="Customer order link" url=${linkFor('order', settings.orderKey)} active=${settings.orderActive} canDisable
         hint="One link for all customers — share it on WhatsApp, your Instagram bio or website. Anyone with it can place an order."
@@ -648,13 +645,17 @@ function Access() {
     <${StaffLinks} />
     <${MessagesCard} />
     <${BotCard} />
-    <${TeamAlertsCard} />`;
+    <${AlertsCard} />`;
 }
 
 // One private admin link per staff member — no account or password, and each can be turned off on its own.
+const teamLinkUrl = (s) => (s.hub ? new URL('../index.html#k=' + s.key, location.href.split('#')[0]).href : linkFor('admin', s.key));
+const ACCESS = { print: 'Print Hub only', both: 'Print Hub + Creative Hub' };
+
 function StaffLinks() {
-  const { staff } = usePrint();
+  const { staff, hubLinks } = usePrint();
   const [name, setName] = useState('');
+  const [kind, setKind] = useState('print');
   const [busy, setBusy] = useState(false);
   const run = async (fn, msg) => {
     try { const list = await fn(); setP({ staff: list }); if (msg) toast(msg); return list; } catch (e) { toastError(e); return null; }
@@ -664,19 +665,28 @@ function StaffLinks() {
     if (!n) return toast("Type the person's name first.", 'error');
     setBusy(true);
     const before = new Set(staff.map((s) => s.id));
-    const list = await run(() => api.print.staffAdd(getKey(), n));
+    const list = await run(() => api.print.staffAdd(getKey(), n, hubLinks && kind === 'both'));
     setBusy(false);
     const made = list?.find((s) => !before.has(s.id));
     if (!made) return;
     setName('');
-    await copyText(linkFor('admin', made.key));
-    toast(`Link for ${made.name} created and copied — send it to them.`);
+    await copyText(teamLinkUrl(made));
+    toast(`${made.hub ? ACCESS.both : ACCESS.print} link for ${made.name} created and copied — send it to them.`);
   };
   const change = async (s) => {
     if (!(await confirmDialog({ title: `Change ${s.name}'s link?`, message: 'They get a new link and the old one stops working immediately. Send them the new one.', confirmLabel: 'Change link' }))) return;
     const list = await run(() => api.print.staffRegenerate(getKey(), s.id));
     const fresh = list?.find((x) => x.id === s.id);
-    if (fresh) { await copyText(linkFor('admin', fresh.key)); toast(`New link for ${s.name} copied — their old one no longer works.`); }
+    if (fresh) { await copyText(teamLinkUrl(fresh)); toast(`New link for ${s.name} copied — their old one no longer works.`); }
+  };
+  const changeAccess = async (s) => {
+    const msg = s.hub
+      ? { title: `Make ${s.name}'s link Print Hub only?`, message: 'They lose access to the Creative Hub straight away. Their link keeps working for the Print Hub — send them the new Print Hub link.', confirmLabel: 'Print Hub only' }
+      : { title: `Give ${s.name} the Creative Hub too?`, message: 'Their link will open the Creative Hub (library, review, talents…) with the Print Hub in its menu. Send them the new link.', confirmLabel: 'Give access' };
+    if (!(await confirmDialog(msg))) return;
+    const list = await run(() => api.print.staffUpdate(getKey(), s.id, { hub: !s.hub }));
+    const fresh = list?.find((x) => x.id === s.id);
+    if (fresh) { await copyText(teamLinkUrl(fresh)); toast(`${s.name} now has ${fresh.hub ? ACCESS.both : ACCESS.print} — new link copied.`); }
   };
   const toggle = (s) => run(() => api.print.staffUpdate(getKey(), s.id, { active: !s.active }),
     s.active ? `${s.name}'s link is turned off.` : `${s.name}'s link is on again.`);
@@ -689,20 +699,23 @@ function StaffLinks() {
     run(() => api.print.staffDelete(getKey(), s.id), `${s.name}'s link is deleted.`);
   };
   return html`<section class="card staff-card">
-    <header class="card-head"><h2>Staff links</h2><${Pill} tone="neutral">${staff.length} ${staff.length === 1 ? 'person' : 'people'}<//></header>
-    <p class="muted small">Give each staff member their own link — no account or password. They open it and go straight to the orders:
-      move them New → Pending → Completed, add notes and print job sheets (they can't change settings or delete orders).
+    <header class="card-head"><h2>Team links</h2><${Pill} tone="neutral">${staff.length} ${staff.length === 1 ? 'person' : 'people'}<//></header>
+    <p class="muted small">Give each person their own link — no account or password. They open it and they're in.
+      ${hubLinks ? html`<b>${ACCESS.print}</b>: print orders only. <b>${ACCESS.both}</b>: the whole Creative Hub too, with the Print Hub in its menu.` : ''}
+      In the Print Hub they can work on orders (not change settings or delete orders)${hubLinks ? '; only owners with a password can manage the team or the storage limit' : ''}.
       Turn off or change one person's link without affecting anyone else. Order history shows who did what.</p>
+    ${hubLinks && html`<${Tabs} items=${[{ id: 'print', label: ACCESS.print }, { id: 'both', label: ACCESS.both }]} value=${kind} onChange=${setKind} />`}
     <div class="inline-form staff-add">
       <input value=${name} maxlength="60" placeholder="Their name, e.g. Ali (production)" aria-label="Staff member's name"
         onInput=${(e) => setName(e.target.value)} onKeyDown=${(e) => { if (e.key === 'Enter') add(); }} />
       <button class="btn btn-primary" disabled=${busy} onClick=${add}><${Icon} name="plus" size=${16} />Create link</button>
     </div>
     ${staff.length ? html`<ul class="staff-list">${staff.map((s) => {
-      const url = linkFor('admin', s.key);
+      const url = teamLinkUrl(s);
       return html`<li key=${s.id} class=${s.active ? '' : 'inactive'}>
         <div class="staff-top">
           <b>${s.name}</b><${Pill} tone=${s.active ? 'good' : 'neutral'}>${s.active ? 'Active' : 'Off'}<//>
+          <${Pill} tone=${s.hub ? 'info' : 'neutral'}>${s.hub ? ACCESS.both : ACCESS.print}<//>
           <span class="muted small staff-used">${s.last_used_at ? 'Last opened ' + timeAgo(s.last_used_at) : 'Not opened yet'}</span>
         </div>
         <div class="url-box">
@@ -712,6 +725,7 @@ function StaffLinks() {
         <div class="page-actions">
           <button class="btn btn-sm" onClick=${() => toggle(s)}><${Icon} name=${s.active ? 'pause' : 'power'} size=${14} />${s.active ? 'Turn off' : 'Turn on'}</button>
           <button class="btn btn-sm" onClick=${() => change(s)}><${Icon} name="refresh" size=${14} />Change link</button>
+          ${hubLinks && html`<button class="btn btn-sm" onClick=${() => changeAccess(s)}><${Icon} name="key" size=${14} />${s.hub ? 'Make Print Hub only' : 'Add Creative Hub'}</button>`}
           <button class="btn btn-sm btn-ghost" onClick=${() => rename(s)}><${Icon} name="edit" size=${14} />Rename</button>
           <button class="btn btn-sm btn-ghost-danger" onClick=${() => remove(s)}><${Icon} name="trash" size=${14} />Delete</button>
         </div>
@@ -849,9 +863,9 @@ function App() {
       try {
         const me = await api.print.me(getKey());
         const orders = await api.print.orders(getKey());
-        setP({ loaded: true, role: me.role, name: me.name || '', staff: me.staff || [], pushKey: me.pushKey || null, questions: me.questions, settings: me.settings || null, botLinked: !!me.settings?.webhookUrl || !!me.botLinked,
+        setP({ loaded: true, role: me.role, name: me.name || '', staff: me.staff || [], devices: me.devices || [], hubLinks: !!me.hubLinks, pushKey: me.pushKey || null, questions: me.questions, settings: me.settings || null, botLinked: !!me.settings?.webhookUrl || !!me.botLinked,
                readyMessage: me.settings?.readyMessage || me.readyMessage || '', newOrderMessage: me.settings?.newOrderMessage || me.newOrderMessage || '',
-               notifyOnDone: me.notifyOnDone !== false, emailReady: me.emailReady !== false, storage: me.storage || null,
+               notifyOnDone: me.notifyOnDone !== false, storage: me.storage || null,
                orders: orders.sort(byNewest) });
         setPhase({ id: 'ready' });
         if (alertsOn()) syncPush(true); // re-register this device so alerts keep arriving with the app closed

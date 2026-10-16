@@ -69,7 +69,7 @@ function UsageBox({ asset }) {
   useEffect(() => { load(); }, [asset.id]);
   const add = async () => {
     try {
-      await api.insert('asset_usage', { asset_id: asset.id, channel: form.channel || null, used_on: form.used_on || today(), note: form.note.trim() || null, created_by: getState().user?.email });
+      await api.insert('asset_usage', { asset_id: asset.id, channel: form.channel || null, used_on: form.used_on || today(), note: form.note.trim() || null, created_by: getState().user?.email || getState().user?.name });
       setForm({ channel: '', used_on: today(), note: '' });
       await Promise.all([load(), refreshAsset(asset.id)]);
       toast('Marked as used.');

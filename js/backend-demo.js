@@ -339,6 +339,7 @@ export function createDemoBackend() {
         if (!st.active) throw new Error('Your access is turned off. Please ask the owner.');
       },
       async changePasscode() {},
+      async requestPasscodeReset() { throw new Error('Demo mode can\'t send emails — in the live app a reset link is emailed to them.'); },
       async signOut() {},
       async changePassword() {},
       async isTeam() { return true; },
@@ -349,7 +350,7 @@ export function createDemoBackend() {
       async info(key) {
         try { const s = JSON.parse(localStorage.getItem(PRINT_KEY))?.settings; return { ok: !!(s?.joinActive && key === s.joinKey) }; } catch { return { ok: false }; }
       },
-      async request(key, name, passcode) {
+      async request(key, name, passcode, email) {
         let d = null;
         try { d = JSON.parse(localStorage.getItem(PRINT_KEY)); } catch {}
         if (!d || !d.settings?.joinActive || key !== d.settings.joinKey) throw new Error('This join link is no longer active. Please ask the owner for a new one.');
@@ -358,7 +359,7 @@ export function createDemoBackend() {
         if (!/^\d{6}$/.test(String(passcode))) throw new Error('Your passcode must be exactly 6 digits.');
         if (d.staff.some((x) => x.name.toLowerCase() === name.toLowerCase())) throw new Error('That name is already taken — add your surname or an initial (e.g. "Ali K").');
         const now = new Date().toISOString();
-        d.staff.push({ id: uid(), name, key: newToken(), active: true, hub: false, status: 'pending', pin: String(passcode), requested_at: now, created_at: now });
+        d.staff.push({ id: uid(), name, email: String(email || '').trim().toLowerCase() || null, key: newToken(), active: true, hub: false, status: 'pending', pin: String(passcode), requested_at: now, created_at: now });
         try { localStorage.setItem(PRINT_KEY, JSON.stringify(d)); } catch {}
         return { status: 'pending', name };
       },

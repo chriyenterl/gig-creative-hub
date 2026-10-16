@@ -18,3 +18,9 @@ bucket_name = "gig-hub-files"
 
 [observability]
 enabled = true
+
+# Where the website lives — used in the "forgot passcode" email link.
+[vars]
+SITE_URL = "https://chriyenterl.github.io/gig-creative-hub/"
+# MAIL_FROM = "GIG <noreply@yourdomain.com>"   # once your domain is verified in Resend
+# Then: npx wrangler secret put RESEND_API_KEY

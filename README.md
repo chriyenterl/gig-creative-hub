@@ -101,6 +101,17 @@ manage everything) can be added in **Settings → Owners** with an email and a t
 
 **Updating the server later:** run `npx wrangler deploy` again in the `cloudflare` folder. The address stays the same.
 
+### Passcode reset emails (so the team can reset forgotten passcodes themselves)
+Emails are sent through **Resend** (free for 3,000 a month) from an address on **your own domain**:
+1. Create an account at [resend.com](https://resend.com) → **Domains → Add domain** → add the DNS records it shows at your
+   domain's provider (or in Cloudflare if your domain is there) and wait until it says **Verified**.
+2. In [`cloudflare/wrangler.toml`](cloudflare/wrangler.toml) set `MAIL_FROM` (e.g. `"GIG <noreply@yourdomain.com>"`) and check
+   `SITE_URL` is your website's address.
+3. Make an API key in Resend, then in the `cloudflare` folder run `npx wrangler secret put RESEND_API_KEY`, paste the key,
+   and run `npx wrangler deploy`.
+
+Until then, “Forgot your passcode?” tells people to ask you, and you use **Reset passcode**.
+
 ---
 
 ## Everyday use
@@ -141,14 +152,17 @@ Open it from the Creative Hub sidebar (**Print Hub**). Owners signed in to the h
 All of them are in **Print Hub → Links & access** (master).
 
 **Your team — join link + passcode (no email):**
-1. Share the **join link** in your team group. A new person opens it, types their **name** and picks a **6-digit passcode**.
+1. Share the **join link** in your team group. A new person opens it, types their **name**, their **email** (only used if they
+   forget their passcode) and picks a **6-digit passcode**.
 2. You get a notification (“Ali wants to join”) and the request appears under **Waiting for approval** — tap
    **Approve — Print Hub only**, **Approve — Print Hub + Creative Hub**, or **Decline**.
 3. They sign in on any phone or computer with **name + passcode** (sign-in page → **Team** tab, or the Print Hub's welcome
    screen). Print-Hub-only people go straight to the Print Hub; the others get the Creative Hub with the Print Hub in its menu.
    Their name shows in the menu and in order history (“by Ali”).
-- **Forgot passcode?** Tap **Reset passcode** next to their name — you'll see a new 6-digit passcode to tell them. It also signs
-  them out everywhere. They can change their passcode any time (Settings → My account, or **Change my passcode** in the Print Hub menu).
+- **Forgot passcode?** They tap **Forgot your passcode?** on the sign-in screen, type their email and get a link (valid 30 minutes)
+  to choose a new one — no need to ask you (needs email sending, see *Passcode reset emails* below). You can still tap
+  **Reset passcode** next to their name to make a new one yourself; either way their other sign-ins end. They can change their
+  passcode and email any time (Settings → My account, or **Change my passcode** in the Print Hub menu).
 - **Remove access:** **Turn off** (temporary — turn on again any time) or **Remove** (for good). Either way they're signed out on
   every device straight away and their phone stops getting order alerts.
 - Also per person: **Add Creative Hub / Make Print Hub only**, **Rename** (that's the name they sign in with), and **Copy sign-in
@@ -212,7 +226,8 @@ have an **Install app** button at the bottom of the menu (it disappears once ins
 - **Computer (Chrome / Edge):** the install icon at the right of the address bar. **Mac Safari:** File → **Add to Dock**.
 
 The app opens full-screen with its own icon and shows the live order list, and new-order notifications arrive even when
-it's closed (see *New-order alerts* above).
+it's closed (see *New-order alerts* above). The icon shows a **number** — how many orders are waiting in *New* — like an unread
+count (iPhone/iPad with alerts on, Android launchers that support it, and computers).
 
 Artwork and voice notes are stored in the **print/** folder of your file storage; orders are in the **print_orders** table.
 The Print Hub works with the Cloudflare or Google setup (or demo mode) — not with the Supabase option.
@@ -257,7 +272,8 @@ The Print Hub works with the Cloudflare or Google setup (or demo mode) — not w
 ```
 index.html                  Team app (login required)
 upload.html                 Creator upload page (opened via a private link)
-join.html, js/join.js       Join page: new team members ask to join with name + passcode
+join.html, js/join.js       Join page: new team members ask to join with name, email + passcode
+reset.html, js/reset.js     Forgot passcode: emailed link → choose a new one
 config.js                   Your settings — the only file you must edit
 css/styles.css              Look & feel (light + dark mode, mobile friendly)
 js/app.js, js/views/*.js    The screens

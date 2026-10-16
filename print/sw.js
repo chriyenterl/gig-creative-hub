@@ -8,6 +8,10 @@ self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
 self.addEventListener('push', (e) => {
   let d = {};
   try { d = e.data ? e.data.json() : {}; } catch {}
+  // The number on the app's icon: how many orders are waiting in "New".
+  if (typeof d.badge === 'number' && self.navigator.setAppBadge) {
+    (d.badge ? self.navigator.setAppBadge(d.badge) : self.navigator.clearAppBadge()).catch(() => {});
+  }
   e.waitUntil(self.registration.showNotification(d.title || 'New print order', {
     body: d.body || 'Open the Print Hub to see it.',
     tag: d.tag || 'gig-order',      // one notification per order — they pile up like messages

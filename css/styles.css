@@ -903,3 +903,4 @@ select {
 .join-box { display: flex; flex-direction: column; gap: 10px; padding-bottom: 14px; margin-bottom: 4px; border-bottom: 1px solid var(--line); }
 .pending-list > li { background: var(--warn-bg); border-radius: var(--radius-sm); padding: 12px; border-top: 0; margin-bottom: 8px; }
 .subhead { font-size: 13px; font-weight: 700; color: var(--ink-2); text-transform: uppercase; letter-spacing: .04em; margin: 14px 0 4px; }
+.staff-email { flex-basis: 100%; }

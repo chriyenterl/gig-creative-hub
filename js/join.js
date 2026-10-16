@@ -12,6 +12,7 @@ const joinKey = decodeURIComponent(location.hash.replace(/^#/, '')).trim();
 function Join() {
   const [ok, setOk] = useState(undefined); // undefined = checking the link
   const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
   const [again, setAgain] = useState('');
   const [busy, setBusy] = useState(false);
@@ -25,10 +26,11 @@ function Join() {
   const submit = async (e) => {
     e.preventDefault();
     if (name.trim().length < 2) return toastError(new Error('Type your name.'));
+    if (!/^\S+@\S+\.\S+$/.test(email.trim())) return toastError(new Error('Type your email — it\'s only used if you forget your passcode.'));
     if (!/^\d{6}$/.test(code)) return toastError(new Error('Choose a passcode of exactly 6 digits.'));
     if (code !== again) return toastError(new Error("The two passcodes don't match — type it again."));
     setBusy(true);
-    try { setDone((await api.join.request(joinKey, name.trim(), code)).name); } catch (err) { toastError(err); }
+    try { setDone((await api.join.request(joinKey, name.trim(), code, email.trim())).name); } catch (err) { toastError(err); }
     setBusy(false);
   };
 
@@ -47,10 +49,13 @@ function Join() {
       <p class="muted">Type your name and choose a 6-digit passcode. You'll use them to sign in once the owner approves you.</p></div>
     <label class="field"><span class="field-label">Your name</span>
       <input autocomplete="name" value=${name} maxlength="40" placeholder="e.g. Ali Rahman" onInput=${(e) => setName(e.target.value)} autofocus /></label>
+    <label class="field"><span class="field-label">Your email</span>
+      <input type="email" autocomplete="email" value=${email} placeholder="you@example.com" onInput=${(e) => setEmail(e.target.value)} />
+      <span class="field-hint">Only used to send you a link if you forget your passcode.</span></label>
     <${PasscodeInput} label="Choose a 6-digit passcode" value=${code} onInput=${setCode} />
     <${PasscodeInput} label="Type it again" value=${again} onInput=${setAgain} />
     <button class="btn btn-primary btn-block btn-lg" disabled=${busy}>${busy ? 'One moment…' : 'Ask to join'}</button>
-    <p class="muted small center">Remember your passcode — if you forget it, the owner can give you a new one.</p>
+    <p class="muted small center">You'll sign in with your name and passcode. Forget it? Reset it yourself by email.</p>
   </form>`;
   return html`<div class="auth-page">${body}</div><${ToastHost} />`;
 }

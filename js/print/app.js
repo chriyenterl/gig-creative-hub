@@ -723,7 +723,7 @@ function TeamCard() {
 
     ${pending.length > 0 && html`<h3 class="subhead">Waiting for approval (${pending.length})</h3>
       <ul class="staff-list pending-list">${pending.map((s) => html`<li key=${s.id}>
-        <div class="staff-top"><b>${s.name}</b><span class="muted small staff-used">asked ${timeAgo(s.requested_at || s.created_at)}</span></div>
+        <div class="staff-top"><b>${s.name}</b>${s.email && html`<span class="muted small">${s.email}</span>`}<span class="muted small staff-used">asked ${timeAgo(s.requested_at || s.created_at)}</span></div>
         <div class="page-actions">
           <button class="btn btn-sm btn-primary" onClick=${() => approve(s, false)}><${Icon} name="check" size=${14} />Approve — ${ACCESS.print}</button>
           ${hubLinks && html`<button class="btn btn-sm btn-primary" onClick=${() => approve(s, true)}><${Icon} name="check" size=${14} />Approve — ${ACCESS.both}</button>`}
@@ -737,6 +737,7 @@ function TeamCard() {
           <b>${s.name}</b><${Pill} tone=${s.active ? 'good' : 'neutral'}>${s.active ? 'Active' : 'Off'}<//>
           <${Pill} tone=${s.hub ? 'info' : 'neutral'}>${s.hub ? ACCESS.both : ACCESS.print}<//>
           <span class="muted small staff-used">${s.passcode ? 'Passcode' : 'Link only'} · ${s.last_used_at ? 'last in ' + timeAgo(s.last_used_at) : 'not signed in yet'}</span>
+          ${s.email && html`<span class="muted small staff-email">${s.email}</span>`}
         </div>
         <div class="page-actions">
           <button class="btn btn-sm" onClick=${() => toggle(s)}><${Icon} name=${s.active ? 'pause' : 'power'} size=${14} />${s.active ? 'Turn off' : 'Turn on'}</button>
@@ -768,6 +769,7 @@ function TeamSignIn() {
       <input autocomplete="username" value=${name} onInput=${(e) => setName(e.target.value)} /></label>
     <${PasscodeInput} label="Passcode" value=${code} onInput=${setCode} autocomplete="current-password" />
     <button class="btn btn-primary btn-block" disabled=${busy || !name.trim() || code.length !== 6}>${busy ? 'One moment…' : 'Sign in'}</button>
+    ${api.auth.requestPasscodeReset && html`<a class="link small center" href="../reset.html">Forgot your passcode?</a>`}
   </form>`;
 }
 
@@ -852,7 +854,11 @@ function Shell() {
   else page = html`<${Overview} />`;
   const current = p0 === 'order' ? orders.find((o) => o.id === p1)?.status : p0 === 'orders' ? p1 : null;
   const waiting = count('new');
-  useEffect(() => { document.title = waiting ? `(${waiting}) ${PRINT_TITLE}` : PRINT_TITLE; }, [waiting]);
+  useEffect(() => {
+    document.title = waiting ? `(${waiting}) ${PRINT_TITLE}` : PRINT_TITLE;
+    // The number on the app's icon (installed app): orders waiting in "New".
+    try { if ('setAppBadge' in navigator) (waiting ? navigator.setAppBadge(waiting) : navigator.clearAppBadge()).catch(() => {}); } catch {}
+  }, [waiting]);
   const item = (href, icon, label, active, badge) => html`<a href=${href} class=${'nav-item' + (active ? ' active' : '')} aria-current=${active ? 'page' : undefined}>
     <${Icon} name=${icon} /><span>${label}</span>${badge > 0 && html`<span class="nav-badge">${badge}</span>`}</a>`;
   const viaToken = !getKey();

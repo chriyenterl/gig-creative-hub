@@ -70,6 +70,7 @@ function Account() {
   const [pw, setPw] = useState('');
   const [code, setCode] = useState('');
   const [again, setAgain] = useState('');
+  const [mail, setMail] = useState(user?.resetEmail || '');
   const change = async () => {
     if (pw.length < 8) return toast('Use at least 8 characters.', 'error');
     try { await api.auth.changePassword(pw); setPw(''); toast('Password changed.'); } catch (e) { toastError(e); }
@@ -79,6 +80,9 @@ function Account() {
     if (code !== again) return toast("The two passcodes don't match.", 'error');
     try { await api.auth.changePasscode(code); setCode(''); setAgain(''); toast('Passcode changed. Use the new one next time you sign in.'); } catch (e) { toastError(e); }
   };
+  const saveMail = async () => {
+    try { await api.auth.changeMyEmail(mail.trim()); setState({ user: { ...user, resetEmail: mail.trim().toLowerCase() } }); toast('Email saved — it\'s only used if you forget your passcode.'); } catch (e) { toastError(e); }
+  };
   return html`<section class="card">
     <header class="card-head"><h2>My account</h2></header>
     <p>${user?.viaLink ? html`Signed in as <b>${user.name}</b> (team member)` : html`Signed in as <b>${user?.email}</b> (owner)`}</p>
@@ -87,6 +91,11 @@ function Account() {
       <${PasscodeInput} label="Type it again" value=${again} onInput=${setAgain} />
     </div>
     <div class="page-actions"><button class="btn" disabled=${code.length !== 6} onClick=${changeCode}>Change passcode</button></div>`}
+    ${!DEMO && user?.viaLink && api.auth.changeMyEmail && html`<p class="muted small">Email for “forgot passcode” links:</p>
+    <div class="inline-form">
+      <input type="email" value=${mail} placeholder="you@example.com" onInput=${(e) => setMail(e.target.value)} autocomplete="email" />
+      <button class="btn" disabled=${!mail.trim() || mail.trim().toLowerCase() === (user.resetEmail || '')} onClick=${saveMail}>Save email</button>
+    </div>`}
     ${!DEMO && !user?.viaLink && html`<div class="inline-form">
       <input type="password" placeholder="New password" value=${pw} onInput=${(e) => setPw(e.target.value)} autocomplete="new-password" />
       <button class="btn" onClick=${change}>Change password</button>

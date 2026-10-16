@@ -85,7 +85,7 @@ export function Login({ linkError }) {
           <input autocomplete="username" value=${teamName} onInput=${(e) => setTeamName(e.target.value)} autofocus /></label>
         <${PasscodeInput} label="Passcode" value=${code} onInput=${setCode} autocomplete="current-password" />
         <button class="btn btn-primary btn-block btn-lg" disabled=${busy || code.length !== 6 || !teamName.trim()}>${busy ? 'One moment…' : 'Sign in'}</button>
-        <p class="muted small center">New here? Ask the owner for the join link. Forgot your passcode? The owner can give you a new one.</p>
+        <p class="muted small center">${api.auth.requestPasscodeReset ? html`<a class="link" href="reset.html">Forgot your passcode?</a> · ` : ''}New here? Ask the owner for the join link.</p>
         <${PasteTeamLink} />`
       : sent ? html`<p class="notice"><${Icon} name="mail" size=${16} /> Check your inbox — we sent a sign-in link to <b>${email}</b>.</p>` : html`
         ${firstRun && html`<label class="field"><span class="field-label">Your name</span>

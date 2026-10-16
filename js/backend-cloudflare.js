@@ -128,6 +128,15 @@ export function createCloudflareBackend(cfg, { portal = false } = {}) {
         const r = await call('changePasscode', { passcode });
         token = r.token; saveToken(token);
       },
+      // Forgot passcode: emails a one-time link; the link's page sets a new passcode and signs them in.
+      async status() { return call('status'); },
+      requestPasscodeReset(email) { return call('passcodeResetRequest', { email }); },
+      async resetPasscode(resetToken, passcode) {
+        const r = await call('passcodeResetConfirm', { token: resetToken, passcode });
+        token = r.token; saveToken(token); user = r.user; emit();
+        return r.user;
+      },
+      changeMyEmail(email) { return call('changeMyEmail', { email }); },
       async signOut() { token = null; saveToken(null); user = null; emit(); },
       async changePassword(password) {
         const r = await call('changePassword', { password });
@@ -139,7 +148,7 @@ export function createCloudflareBackend(cfg, { portal = false } = {}) {
     // Join page: new people ask to join with a name + passcode, and the owner approves them.
     join: {
       info(joinKey) { return call('joinInfo', { joinKey }); },
-      request(joinKey, name, passcode) { return call('joinRequest', { joinKey, name, passcode }); },
+      request(joinKey, name, passcode, email) { return call('joinRequest', { joinKey, name, passcode, email }); },
     },
 
     async loadAll() { return call('bootstrap'); },

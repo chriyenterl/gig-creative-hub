@@ -22,7 +22,7 @@
 const TOKEN_DAYS = 30;           // how long a team login lasts
 const PBKDF2_ROUNDS = 20000;     // password hashing strength (kept modest for the free plan's CPU limit)
 const CHUNK = 10 * 1024 * 1024;  // upload part size — big files are sent in pieces of this size
-const SCHEMA_V = '5';            // bump when SCHEMA changes so new columns get added
+const SCHEMA_V = '6';            // bump when SCHEMA changes so new columns get added
 const GB = 1e9;                  // storage is counted the way Cloudflare bills it (1 GB = 1,000,000,000 bytes)
 const DEFAULT_LIMIT_GB = 10;     // uploads stop here (R2's free allowance) — change it in Settings
 
@@ -47,8 +47,9 @@ const SCHEMA = {
                   json: ['answers', 'history'] },
   // The team (everyone except owners): they join with a name + 6-digit passcode and the owner approves them.
   // hub_access = true opens the Creative Hub as well as the Print Hub. link_key = their personal sign-in link.
-  print_staff:  { cols: ['id', 'name', 'login_name', 'pass_hash', 'pass_salt', 'status', 'link_key', 'is_active', 'hub_access',
-                         'requested_at', 'last_used_at', 'created_at'], bool: ['is_active', 'hub_access'] },
+  // email is only used to send a "forgot passcode" link (reset_hash / reset_exp hold that one-time link).
+  print_staff:  { cols: ['id', 'name', 'login_name', 'email', 'pass_hash', 'pass_salt', 'status', 'link_key', 'is_active', 'hub_access',
+                         'reset_hash', 'reset_exp', 'requested_at', 'last_used_at', 'created_at'], bool: ['is_active', 'hub_access'] },
   // Phones and computers that get a notification for every new order (even with the app closed).
   push_subs:    { cols: ['id', 'endpoint', 'p256dh', 'auth', 'who', 'device', 'access', 'ref', 'key_hash', 'created_at'] },
 };
@@ -73,6 +74,7 @@ const INDEXES = [
   'CREATE INDEX IF NOT EXISTS usage_asset ON asset_usage (asset_id)',
   'CREATE UNIQUE INDEX IF NOT EXISTS print_staff_key ON print_staff (link_key)',
   'CREATE UNIQUE INDEX IF NOT EXISTS print_staff_login ON print_staff (login_name)',
+  'CREATE UNIQUE INDEX IF NOT EXISTS print_staff_email ON print_staff (email)',
   'CREATE UNIQUE INDEX IF NOT EXISTS push_subs_endpoint ON push_subs (endpoint)',
 ];
 
@@ -146,7 +148,7 @@ async function route(req, ctx) {
   const a = String(req.action || '');
 
   // ── No login needed ──
-  if (a === 'status') return { needsSetup: (await count('team_members')) === 0 };
+  if (a === 'status') return { needsSetup: (await count('team_members')) === 0, emailReset: emailReady() };
   if (a === 'setupAdmin') return setupAdmin(req);
   if (a === 'login') return login(req);
   if (a === 'linkLogin') return linkLogin(req.linkKey);
@@ -154,6 +156,9 @@ async function route(req, ctx) {
   if (a === 'joinInfo') return { ok: await joinKeyOk(req.joinKey) };
   if (a === 'joinRequest') return joinRequest(req, ctx);
   if (a === 'changePasscode') return changePasscode(req);
+  if (a === 'passcodeResetRequest') return passcodeResetRequest(req);
+  if (a === 'passcodeResetConfirm') return passcodeResetConfirm(req);
+  if (a === 'changeMyEmail') return changeMyEmail(req);
   if (a === 'linkInfo') return linkInfo(req.linkToken);
   if (a === 'linkStartUpload') return linkStartUpload(req);
   if (a === 'linkSubmit') return linkSubmit(req);
@@ -524,13 +529,13 @@ async function findMember(email) {
 }
 
 function publicMember(m) {
-  if (m.viaLink) return { id: m.id, email: null, name: m.name, created_at: m.created_at, links: null, viaLink: true, hub: m.hub, passcode: m.passcode };
+  if (m.viaLink) return { id: m.id, email: null, name: m.name, created_at: m.created_at, links: null, viaLink: true, hub: m.hub, passcode: m.passcode, resetEmail: m.resetEmail };
   return { id: m.id, email: m.email, name: m.name, created_at: m.created_at, links: null };
 }
 
 // A team member (not an owner): signed in with their name + passcode, or their personal link.
 const linkUser = (st) => ({ id: 'link:' + st.id, email: null, name: st.name, created_at: st.created_at, viaLink: true,
-  hub: !!st.hub_access, passcode: !!st.pass_hash, staffId: st.id, linkKey: st.link_key });
+  hub: !!st.hub_access, passcode: !!st.pass_hash, resetEmail: st.email || null, staffId: st.id, linkKey: st.link_key });
 
 async function staffByKey(key) {
   if (!key) return null;
@@ -597,6 +602,81 @@ async function passcodeLogin(req) {
   return teamSession(st);
 }
 
+const cleanEmail = (e) => {
+  const email = String(e || '').trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 200) fail('Type a valid email address — it\'s only used if you forget your passcode.');
+  return email;
+};
+
+// ── Forgot passcode: a one-time link by email (no owner needed) ──
+async function passcodeResetRequest(req) {
+  if (!emailReady()) fail("Email resets aren't switched on yet — please ask the owner to give you a new passcode.", 'NO_EMAIL');
+  const email = cleanEmail(req.email);
+  const byIp = await guard('rsip:' + req._ip, 10, 'Too many requests. Please wait 15 minutes.');
+  const byEmail = await guard('rs:' + email, 3, 'A reset email was just sent — please check your inbox (and spam), or wait 15 minutes.');
+  await byIp.count(); await byEmail.count();
+  const r = await DB.prepare("SELECT * FROM print_staff WHERE email = ? AND status = 'approved' AND is_active = 1").bind(email).first();
+  if (r) {
+    const st = rowOut('print_staff', r);
+    const token = newKey() + newKey();
+    await DB.prepare('UPDATE print_staff SET reset_hash = ?, reset_exp = ? WHERE id = ?').bind(await sha256(token), Date.now() + 30 * 60e3, st.id).run();
+    const link = new URL('reset.html#' + token, ENV.SITE_URL).href;
+    const sent = await sendEmail({
+      to: email,
+      subject: 'Reset your passcode',
+      text: `Hi ${st.name},\n\nTap this link to choose a new 6-digit passcode (it works for 30 minutes):\n${link}\n\nDidn't ask for this? You can ignore this email — your passcode stays the same.`,
+      html: `<div style="font-family:Arial,sans-serif;font-size:15px;color:#1d1033"><p>Hi ${escapeHtml(st.name)},</p>
+        <p>Tap the button to choose a new 6-digit passcode. The link works for 30 minutes.</p>
+        <p><a href="${escapeHtml(link)}" style="background:#ff3d7f;color:#fff;padding:12px 18px;border-radius:999px;text-decoration:none;display:inline-block">Choose a new passcode</a></p>
+        <p style="color:#777;font-size:13px">Didn't ask for this? Ignore this email — your passcode stays the same.</p></div>`,
+    });
+    if (!sent.ok) fail("We couldn't send the email right now. Please try again later, or ask the owner for a new passcode.");
+  }
+  // Same answer either way, so nobody can find out which emails are on the team.
+  return { sent: true };
+}
+
+async function passcodeResetConfirm(req) {
+  const token = String(req.token || '');
+  const r = token.length >= 40 ? await DB.prepare('SELECT * FROM print_staff WHERE reset_hash = ?').bind(await sha256(token)).first() : null;
+  const st = r && rowOut('print_staff', r);
+  if (!st || !(Number(r.reset_exp) > Date.now())) fail('This reset link has expired or was already used. Ask for a new one on the sign-in page.');
+  if (st.status !== 'approved' || !st.is_active) fail('Your access is turned off. Please ask the owner.');
+  checkPasscode(req.passcode);
+  const salt = uuid();
+  const fresh = await updateRow('print_staff', st.id, { pass_salt: salt, pass_hash: await hashPassword(req.passcode, salt), reset_hash: null, reset_exp: null });
+  await touchStaff(fresh);
+  return teamSession(fresh); // signs them in straight away (and everywhere else out)
+}
+
+async function changeMyEmail(req) {
+  const me = await verify(req.token);
+  if (!me.viaLink) fail('Owners change their details in Settings → Owners.');
+  const email = cleanEmail(req.email);
+  if (await DB.prepare('SELECT 1 FROM print_staff WHERE email = ? AND id <> ?').bind(email, me.staffId).first()) fail('Someone on the team already uses that email.');
+  await updateRow('print_staff', me.staffId, { email });
+  return { email };
+}
+
+// ── Sending email (Resend — set the RESEND_API_KEY secret and the MAIL_FROM / SITE_URL vars) ──
+const emailReady = () => !!(ENV.RESEND_API_KEY && ENV.MAIL_FROM && ENV.SITE_URL);
+const escapeHtml = (t) => String(t == null ? '' : t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+async function sendEmail({ to, subject, text, html }) {
+  try {
+    const res = await fetch(ENV.RESEND_API_URL || 'https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + ENV.RESEND_API_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: ENV.MAIL_FROM, to: [to], subject, text, html }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) console.error('email failed', res.status, (await res.text().catch(() => '')).slice(0, 200));
+    return { ok: res.ok };
+  } catch (e) {
+    console.error('email failed', e);
+    return { ok: false };
+  }
+}
+
 async function changePasscode(req) {
   const me = await verify(req.token);
   if (!me.viaLink) fail('Owners sign in with a password — change it in Settings.');
@@ -616,16 +696,20 @@ async function joinRequest(req, ctx) {
   const ipGuard = await guard('join:' + req._ip, 5, 'Too many sign-ups from here. Please wait 15 minutes.');
   if (!(await joinKeyOk(req.joinKey))) fail('This join link is no longer active. Please ask the owner for a new one.');
   const name = cleanPersonName(req.name);
+  const email = cleanEmail(req.email);
   checkPasscode(req.passcode);
   await ipGuard.count();
   const ln = loginName(name);
   if (await DB.prepare('SELECT 1 FROM print_staff WHERE login_name = ?').bind(ln).first()) {
     fail('That name is already taken — add your surname or an initial (e.g. "Ali K").');
   }
+  if (await DB.prepare('SELECT 1 FROM print_staff WHERE email = ?').bind(email).first()) {
+    fail('Someone on the team already uses that email.');
+  }
   const waiting = (await DB.prepare("SELECT COUNT(*) AS n FROM print_staff WHERE status = 'pending'").first()).n;
   if (waiting >= 30) fail('There are too many people waiting for approval. Please ask the owner.');
   const salt = uuid();
-  const st = await insertRow('print_staff', { name, login_name: ln, pass_salt: salt, pass_hash: await hashPassword(req.passcode, salt),
+  const st = await insertRow('print_staff', { name, login_name: ln, email, pass_salt: salt, pass_hash: await hashPassword(req.passcode, salt),
     status: 'pending', link_key: newKey(), is_active: true, hub_access: false, requested_at: nowIso() });
   ctx.waitUntil(pushOwners({ title: `${name} wants to join`, body: 'Tap to approve or decline.', url: 'index.html#/access', tag: 'join-' + st.id, at: Date.now() })
     .catch((e) => console.error(e)));
@@ -998,7 +1082,7 @@ async function printActor(req) {
 // ── Staff links: one private admin link per person, no account needed ──
 async function staffList() {
   return (await readTable('print_staff')).map((x) => ({ id: x.id, name: x.name, key: x.link_key, active: x.is_active, hub: x.hub_access,
-    status: x.status || 'approved', passcode: !!x.pass_hash, requested_at: x.requested_at, last_used_at: x.last_used_at, created_at: x.created_at }));
+    status: x.status || 'approved', passcode: !!x.pass_hash, email: x.email, requested_at: x.requested_at, last_used_at: x.last_used_at, created_at: x.created_at }));
 }
 
 const cleanStaffName = (name) => {
@@ -1481,6 +1565,7 @@ async function pushNewOrder(o) {
   const who = (o.customer_name || 'A customer') + (o.company ? ` (${o.company})` : '');
   const what = [o.summary, o.quantity ? '× ' + o.quantity : ''].filter(Boolean).join(' ');
   const due = dueText(o.due_date);
-  const data = { title: `New order ${o.order_no}`, body: [who, what, due ? 'due ' + due : ''].filter(Boolean).join(' — '), orderId: o.id, tag: o.id, at: Date.now() };
+  const waiting = (await DB.prepare("SELECT COUNT(*) AS n FROM print_orders WHERE status = 'new'").first()).n; // number on the app icon
+  const data = { title: `New order ${o.order_no}`, body: [who, what, due ? 'due ' + due : ''].filter(Boolean).join(' — '), orderId: o.id, tag: o.id, at: Date.now(), badge: waiting };
   await Promise.all(subs.map((sub) => sendPush(sub, data)));
 }

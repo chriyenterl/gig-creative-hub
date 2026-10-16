@@ -894,3 +894,12 @@ select {
   .sidebar { padding-top: calc(16px + env(safe-area-inset-top)); padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
   .main { padding-bottom: calc(56px + env(safe-area-inset-bottom)); }
 }
+
+/* Team passcodes */
+.passcode-input { letter-spacing: .35em; font-size: 20px; font-weight: 700; text-align: center; }
+.join-done { width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center; background: var(--good-bg); color: var(--good-ink); }
+.auth-tabs { margin: -4px 0 2px; }
+.code-reveal { display: block; margin: 12px 0; font-size: 32px; font-weight: 800; letter-spacing: .25em; text-align: center; padding: 12px; border-radius: var(--radius); background: var(--sunken); }
+.join-box { display: flex; flex-direction: column; gap: 10px; padding-bottom: 14px; margin-bottom: 4px; border-bottom: 1px solid var(--line); }
+.pending-list > li { background: var(--warn-bg); border-radius: var(--radius-sm); padding: 12px; border-top: 0; margin-bottom: 8px; }
+.subhead { font-size: 13px; font-weight: 700; color: var(--ink-2); text-transform: uppercase; letter-spacing: .04em; margin: 14px 0 4px; }

@@ -109,8 +109,9 @@ export function Modal({ title, onClose, children, footer, size = 'md' }) {
 
 // ── Confirm dialog: `if (await confirmDialog({...})) …` ───────────────────
 let showDialog = null;
-export function confirmDialog({ title = 'Are you sure?', message, confirmLabel = 'Confirm', danger = false }) {
-  return new Promise((resolve) => showDialog ? showDialog({ title, message, confirmLabel, danger, resolve }) : resolve(confirm(message)));
+// alert: true shows only the confirm button (for "here's the info" dialogs).
+export function confirmDialog({ title = 'Are you sure?', message, confirmLabel = 'Confirm', danger = false, alert = false }) {
+  return new Promise((resolve) => showDialog ? showDialog({ title, message, confirmLabel, danger, alert, resolve }) : resolve(confirm(message)));
 }
 export function DialogHost() {
   const [d, setD] = useState(null);
@@ -118,7 +119,7 @@ export function DialogHost() {
   if (!d) return null;
   const close = (v) => { d.resolve(v); setD(null); };
   return html`<${Modal} title=${d.title} size="sm" onClose=${() => close(false)} footer=${html`
-      <button class="btn" onClick=${() => close(false)}>Cancel</button>
+      ${!d.alert && html`<button class="btn" onClick=${() => close(false)}>Cancel</button>`}
       <button class=${'btn ' + (d.danger ? 'btn-danger' : 'btn-primary')} onClick=${() => close(true)} autofocus>${d.confirmLabel}</button>`}>
     <p class="dialog-msg">${d.message}</p>
   <//>`;
@@ -252,6 +253,13 @@ export function StorageWarning({ storage, settingsHref = '#/settings', print = f
     ? html`<b>Storage is full (${nums}).</b> New uploads are paused — including creator links and print order files. ${fix}`
     : html`<b>Storage is ${Math.round(ratio * 100)}% full (${nums}).</b> New uploads stop at ${fmtGB(storage.limit)}. ${fix}`;
   return html`<div class=${'storage-banner' + (full ? ' full' : '')} role="status"><${Icon} name="alert" size=${16} /><span>${text}</span></div>`;
+}
+
+// ── 6-digit passcode box (team sign-in) ───────────────────────────────────
+export function PasscodeInput({ value, onInput, label, autocomplete = 'new-password', autofocus }) {
+  return html`<label class="field"><span class="field-label">${label}</span>
+    <input class="passcode-input" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete=${autocomplete}
+      placeholder="••••••" value=${value} autofocus=${autofocus} onInput=${(e) => onInput(e.target.value.replace(/\D/g, '').slice(0, 6))} /></label>`;
 }
 
 // ── Drag-and-drop file picker ─────────────────────────────────────────────

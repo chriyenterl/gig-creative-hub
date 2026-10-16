@@ -5,7 +5,7 @@ import { loadBackend, MODE } from '../api.js';
 import { setApi } from '../store.js';
 import { CONFIG } from '../../config.js';
 import { fmtDate, timeAgo, copyText, parseHash, hrefFor, go, fmtBytes } from '../util.js';
-import { Icon, PageHead, Field, Empty, Pill, Tabs, MultiChips, DialogHost, ToastHost, TooltipHost, InstallButton, InstallHelpHost, StorageWarning, isInstalledApp, confirmDialog, toast, toastError } from '../ui.js';
+import { Icon, PageHead, Field, Empty, Pill, Tabs, MultiChips, DialogHost, ToastHost, TooltipHost, InstallButton, InstallHelpHost, StorageWarning, isInstalledApp, PasscodeInput, confirmDialog, toast, toastError } from '../ui.js';
 import {
   ORDER_STATUS, STATUS_ORDER, QUESTION_TYPES, QUESTION_ROLES, hasOptions, newQuestionId, answerText, isOverdue, dueLabel,
   fillMessage, notifyPayload, SAMPLE_ORDER, MESSAGE_TAGS, useFileLinks, waLink, teamMessage,
@@ -33,7 +33,7 @@ addEventListener('hashchange', () => { if (takeKeyFromLink()) location.reload();
 const linkFor = (page, key) => new URL(page === 'order' ? 'order.html#' + key : 'index.html#k=' + key, location.href.split('#')[0]).href;
 
 // ── Tiny store ─────────────────────────────────────────────────────────────
-let P = { loaded: false, role: null, name: '', staff: [], devices: [], hubLinks: false, pushKey: null, questions: [], settings: null, orders: [], botLinked: false, readyMessage: '', newOrderMessage: '', notifyOnDone: true };
+let P = { loaded: false, role: null, name: '', via: 'key', hub: false, passcode: false, staff: [], devices: [], hubLinks: false, pushKey: null, questions: [], settings: null, orders: [], botLinked: false, readyMessage: '', newOrderMessage: '', notifyOnDone: true };
 const subs = new Set();
 const setP = (patch) => { P = { ...P, ...patch }; subs.forEach((f) => f(P)); };
 function usePrint() {
@@ -642,96 +642,147 @@ function Access() {
         hint="Full control: everything staff can do, plus the order form, these links, the bot and deleting orders. Your Creative Hub team always has master access."
         warn="Keep this one private." onChange=${() => change('master', 'master link')} />
     </div>
-    <${StaffLinks} />
+    <${TeamCard} />
     <${MessagesCard} />
     <${BotCard} />
     <${AlertsCard} />`;
 }
 
-// One private admin link per staff member — no account or password, and each can be turned off on its own.
+// The team: people join with the join link (name + 6-digit passcode) and the owner approves them here.
 const teamLinkUrl = (s) => (s.hub ? new URL('../index.html#k=' + s.key, location.href.split('#')[0]).href : linkFor('admin', s.key));
 const ACCESS = { print: 'Print Hub only', both: 'Print Hub + Creative Hub' };
 
-function StaffLinks() {
-  const { staff, hubLinks } = usePrint();
-  const [name, setName] = useState('');
-  const [kind, setKind] = useState('print');
-  const [busy, setBusy] = useState(false);
+function TeamCard() {
+  const { staff, settings, hubLinks } = usePrint();
+  const joinUrl = settings?.joinKey ? new URL('../join.html#' + settings.joinKey, location.href.split('#')[0]).href : '';
+  const pending = staff.filter((s) => s.status === 'pending');
+  const members = staff.filter((s) => s.status !== 'pending');
   const run = async (fn, msg) => {
     try { const list = await fn(); setP({ staff: list }); if (msg) toast(msg); return list; } catch (e) { toastError(e); return null; }
   };
-  const add = async () => {
-    const n = name.trim();
-    if (!n) return toast("Type the person's name first.", 'error');
-    setBusy(true);
-    const before = new Set(staff.map((s) => s.id));
-    const list = await run(() => api.print.staffAdd(getKey(), n, hubLinks && kind === 'both'));
-    setBusy(false);
-    const made = list?.find((s) => !before.has(s.id));
-    if (!made) return;
-    setName('');
-    await copyText(teamLinkUrl(made));
-    toast(`${made.hub ? ACCESS.both : ACCESS.print} link for ${made.name} created and copied — send it to them.`);
+  const runSettings = async (fn, msg) => {
+    try { setP({ settings: await fn() }); toast(msg); } catch (e) { toastError(e); }
   };
-  const change = async (s) => {
-    if (!(await confirmDialog({ title: `Change ${s.name}'s link?`, message: 'They get a new link and the old one stops working immediately. Send them the new one.', confirmLabel: 'Change link' }))) return;
-    const list = await run(() => api.print.staffRegenerate(getKey(), s.id));
-    const fresh = list?.find((x) => x.id === s.id);
-    if (fresh) { await copyText(teamLinkUrl(fresh)); toast(`New link for ${s.name} copied — their old one no longer works.`); }
+  const changeJoin = async () => {
+    if (!(await confirmDialog({ title: 'Change the join link?', message: 'A new join link is made and the old one stops working. People already on the team are not affected.', confirmLabel: 'Change link' }))) return;
+    runSettings(() => api.print.regenerate(getKey(), 'join'), 'New join link — the old one no longer works.');
   };
+  const toggleJoin = () => runSettings(() => api.print.setActive(getKey(), 'join', !settings.joinActive),
+    settings.joinActive ? 'Join link turned off — nobody new can ask to join.' : 'Join link is on again.');
+  const approve = (s, hub) => run(() => api.print.staffApprove(getKey(), s.id, hub),
+    `${s.name} is in (${hub ? ACCESS.both : ACCESS.print}) — they can sign in with their name and passcode now.`);
+  const decline = async (s) => {
+    if (!(await confirmDialog({ title: `Decline ${s.name}?`, message: 'Their request is removed. They can ask again with the join link.', confirmLabel: 'Decline', danger: true }))) return;
+    run(() => api.print.staffDelete(getKey(), s.id), `${s.name}'s request was declined.`);
+  };
+  const reset = async (s) => {
+    if (!(await confirmDialog({ title: `New passcode for ${s.name}?`, message: `${s.name} is signed out on every device and gets a new 6-digit passcode, which you'll see next — pass it on to them.`, confirmLabel: 'Make new passcode' }))) return;
+    try {
+      const r = await api.print.staffResetPasscode(getKey(), s.id);
+      setP({ staff: r.staff });
+      await confirmDialog({ alert: true, title: `${s.name}'s new passcode`, confirmLabel: 'Done',
+        message: html`<span class="code-reveal">${r.passcode}</span>Tell ${s.name} this passcode. They sign in with their name and it, and can change it in Settings.` });
+    } catch (e) { toastError(e); }
+  };
+  const toggle = (s) => run(() => api.print.staffUpdate(getKey(), s.id, { active: !s.active }),
+    s.active ? `${s.name} can't get in any more (signed out everywhere).` : `${s.name} can get in again.`);
   const changeAccess = async (s) => {
     const msg = s.hub
-      ? { title: `Make ${s.name}'s link Print Hub only?`, message: 'They lose access to the Creative Hub straight away. Their link keeps working for the Print Hub — send them the new Print Hub link.', confirmLabel: 'Print Hub only' }
-      : { title: `Give ${s.name} the Creative Hub too?`, message: 'Their link will open the Creative Hub (library, review, talents…) with the Print Hub in its menu. Send them the new link.', confirmLabel: 'Give access' };
+      ? { title: `Make ${s.name} Print Hub only?`, message: 'They lose access to the Creative Hub straight away.', confirmLabel: 'Print Hub only' }
+      : { title: `Give ${s.name} the Creative Hub too?`, message: 'Next time they sign in they get the Creative Hub (library, review, talents…) with the Print Hub in its menu.', confirmLabel: 'Give access' };
     if (!(await confirmDialog(msg))) return;
     const list = await run(() => api.print.staffUpdate(getKey(), s.id, { hub: !s.hub }));
     const fresh = list?.find((x) => x.id === s.id);
-    if (fresh) { await copyText(teamLinkUrl(fresh)); toast(`${s.name} now has ${fresh.hub ? ACCESS.both : ACCESS.print} — new link copied.`); }
+    if (fresh) toast(`${s.name} now has ${fresh.hub ? ACCESS.both : ACCESS.print}.`);
   };
-  const toggle = (s) => run(() => api.print.staffUpdate(getKey(), s.id, { active: !s.active }),
-    s.active ? `${s.name}'s link is turned off.` : `${s.name}'s link is on again.`);
   const rename = (s) => {
-    const n = prompt('Name for this link:', s.name);
-    if (n != null && n.trim() && n.trim() !== s.name) run(() => api.print.staffUpdate(getKey(), s.id, { name: n.trim() }), 'Renamed.');
+    const n = prompt('Name (they sign in with this):', s.name);
+    if (n != null && n.trim() && n.trim() !== s.name) run(() => api.print.staffUpdate(getKey(), s.id, { name: n.trim() }), `Renamed — they now sign in as “${n.trim()}”.`);
   };
   const remove = async (s) => {
-    if (!(await confirmDialog({ title: `Delete ${s.name}'s link?`, message: 'Their link stops working for good. Their name stays in the history of orders they worked on.', confirmLabel: 'Delete', danger: true }))) return;
-    run(() => api.print.staffDelete(getKey(), s.id), `${s.name}'s link is deleted.`);
+    if (!(await confirmDialog({ title: `Remove ${s.name} from the team?`, message: "They're signed out on every device straight away and can't get back in (they could ask to join again with the join link, which you'd have to approve). Their name stays in the history of orders they worked on.", confirmLabel: 'Remove', danger: true }))) return;
+    run(() => api.print.staffDelete(getKey(), s.id), `${s.name} was removed.`);
   };
-  return html`<section class="card staff-card">
-    <header class="card-head"><h2>Team links</h2><${Pill} tone="neutral">${staff.length} ${staff.length === 1 ? 'person' : 'people'}<//></header>
-    <p class="muted small">Give each person their own link — no account or password. They open it and they're in.
-      ${hubLinks ? html`<b>${ACCESS.print}</b>: print orders only. <b>${ACCESS.both}</b>: the whole Creative Hub too, with the Print Hub in its menu.` : ''}
-      In the Print Hub they can work on orders (not change settings or delete orders)${hubLinks ? '; only owners with a password can manage the team or the storage limit' : ''}.
-      Turn off or change one person's link without affecting anyone else. Order history shows who did what.</p>
-    ${hubLinks && html`<${Tabs} items=${[{ id: 'print', label: ACCESS.print }, { id: 'both', label: ACCESS.both }]} value=${kind} onChange=${setKind} />`}
-    <div class="inline-form staff-add">
-      <input value=${name} maxlength="60" placeholder="Their name, e.g. Ali (production)" aria-label="Staff member's name"
-        onInput=${(e) => setName(e.target.value)} onKeyDown=${(e) => { if (e.key === 'Enter') add(); }} />
-      <button class="btn btn-primary" disabled=${busy} onClick=${add}><${Icon} name="plus" size=${16} />Create link</button>
-    </div>
-    ${staff.length ? html`<ul class="staff-list">${staff.map((s) => {
-      const url = teamLinkUrl(s);
-      return html`<li key=${s.id} class=${s.active ? '' : 'inactive'}>
+  const copyLink = async (s) => { await copyText(teamLinkUrl(s)); toast(`${s.name}'s sign-in link copied — it signs them in without a passcode.`); };
+
+  return html`<section class="card staff-card" id="team">
+    <header class="card-head"><h2>Team</h2><${Pill} tone="neutral">${members.length} ${members.length === 1 ? 'person' : 'people'}<//></header>
+    ${settings?.joinKey ? html`<div class="join-box">
+      <p class="muted small"><b>Join link</b> — share it in your team group. New people open it, type their name and choose a 6-digit passcode,
+        then you approve them below. After that they sign in anywhere with their name + passcode — no email needed.</p>
+      <div class="url-box">
+        <code>${settings.joinActive ? joinUrl : joinUrl.replace(/#.*$/, '#' + '•'.repeat(12))}</code>
+        <button class="btn btn-sm" disabled=${!settings.joinActive} onClick=${async () => { await copyText(joinUrl); toast('Join link copied.'); }}><${Icon} name="copy" size=${14} />Copy</button>
+      </div>
+      <div class="page-actions">
+        <${Pill} tone=${settings.joinActive ? 'good' : 'neutral'}>${settings.joinActive ? 'On' : 'Off'}<//>
+        <button class="btn btn-sm" onClick=${toggleJoin}><${Icon} name=${settings.joinActive ? 'pause' : 'power'} size=${14} />${settings.joinActive ? 'Turn off' : 'Turn on'}</button>
+        <button class="btn btn-sm" onClick=${changeJoin}><${Icon} name="refresh" size=${14} />Change link</button>
+      </div>
+    </div>` : html`<p class="muted small">Give each person their own link (no passcode). Joining with a passcode needs the Cloudflare setup.</p>`}
+
+    ${pending.length > 0 && html`<h3 class="subhead">Waiting for approval (${pending.length})</h3>
+      <ul class="staff-list pending-list">${pending.map((s) => html`<li key=${s.id}>
+        <div class="staff-top"><b>${s.name}</b><span class="muted small staff-used">asked ${timeAgo(s.requested_at || s.created_at)}</span></div>
+        <div class="page-actions">
+          <button class="btn btn-sm btn-primary" onClick=${() => approve(s, false)}><${Icon} name="check" size=${14} />Approve — ${ACCESS.print}</button>
+          ${hubLinks && html`<button class="btn btn-sm btn-primary" onClick=${() => approve(s, true)}><${Icon} name="check" size=${14} />Approve — ${ACCESS.both}</button>`}
+          <button class="btn btn-sm btn-ghost-danger" onClick=${() => decline(s)}>Decline</button>
+        </div>
+      </li>`)}</ul>`}
+
+    ${members.length > 0 && html`<h3 class="subhead">On the team</h3>
+      <ul class="staff-list">${members.map((s) => html`<li key=${s.id} class=${s.active ? '' : 'inactive'}>
         <div class="staff-top">
           <b>${s.name}</b><${Pill} tone=${s.active ? 'good' : 'neutral'}>${s.active ? 'Active' : 'Off'}<//>
           <${Pill} tone=${s.hub ? 'info' : 'neutral'}>${s.hub ? ACCESS.both : ACCESS.print}<//>
-          <span class="muted small staff-used">${s.last_used_at ? 'Last opened ' + timeAgo(s.last_used_at) : 'Not opened yet'}</span>
-        </div>
-        <div class="url-box">
-          <code>${s.active ? url : url.replace(/(#k=)[^#]*$/, '$1' + '•'.repeat(12))}</code>
-          <button class="btn btn-sm" disabled=${!s.active} onClick=${async () => { await copyText(url); toast(`${s.name}'s link copied.`); }}><${Icon} name="copy" size=${14} />Copy</button>
+          <span class="muted small staff-used">${s.passcode ? 'Passcode' : 'Link only'} · ${s.last_used_at ? 'last in ' + timeAgo(s.last_used_at) : 'not signed in yet'}</span>
         </div>
         <div class="page-actions">
           <button class="btn btn-sm" onClick=${() => toggle(s)}><${Icon} name=${s.active ? 'pause' : 'power'} size=${14} />${s.active ? 'Turn off' : 'Turn on'}</button>
-          <button class="btn btn-sm" onClick=${() => change(s)}><${Icon} name="refresh" size=${14} />Change link</button>
           ${hubLinks && html`<button class="btn btn-sm" onClick=${() => changeAccess(s)}><${Icon} name="key" size=${14} />${s.hub ? 'Make Print Hub only' : 'Add Creative Hub'}</button>`}
+          ${s.passcode && html`<button class="btn btn-sm" onClick=${() => reset(s)}><${Icon} name="refresh" size=${14} />Reset passcode</button>`}
+          <button class="btn btn-sm btn-ghost" disabled=${!s.active} onClick=${() => copyLink(s)}><${Icon} name="link" size=${14} />Copy sign-in link</button>
           <button class="btn btn-sm btn-ghost" onClick=${() => rename(s)}><${Icon} name="edit" size=${14} />Rename</button>
-          <button class="btn btn-sm btn-ghost-danger" onClick=${() => remove(s)}><${Icon} name="trash" size=${14} />Delete</button>
+          <button class="btn btn-sm btn-ghost-danger" onClick=${() => remove(s)}><${Icon} name="trash" size=${14} />Remove</button>
         </div>
-      </li>`;
-    })}</ul>` : html`<p class="muted small">No staff links yet — type a name above to create the first one.</p>`}
+      </li>`)}</ul>`}
+    ${!members.length && !pending.length && html`<p class="muted small">Nobody yet — share the join link with your team.</p>`}
   </section>`;
+}
+
+// Team members signed in with a passcode: sign in here, change passcode, sign out.
+function TeamSignIn() {
+  const [name, setName] = useState('');
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+  if (!api.auth?.signInWithPasscode) return null;
+  const go = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    try { setKey(null); await api.auth.signInWithPasscode(name.trim(), code); location.replace(location.pathname + '#/'); location.reload(); }
+    catch (err) { toastError(err); setBusy(false); setCode(''); }
+  };
+  return html`<form class="team-signin" onSubmit=${go}>
+    <label class="field"><span class="field-label">Your name</span>
+      <input autocomplete="username" value=${name} onInput=${(e) => setName(e.target.value)} /></label>
+    <${PasscodeInput} label="Passcode" value=${code} onInput=${setCode} autocomplete="current-password" />
+    <button class="btn btn-primary btn-block" disabled=${busy || !name.trim() || code.length !== 6}>${busy ? 'One moment…' : 'Sign in'}</button>
+  </form>`;
+}
+
+async function changeMyPasscode() {
+  const code = prompt('New 6-digit passcode:');
+  if (code == null) return;
+  if (!/^\d{6}$/.test(code)) return toast('Your passcode must be exactly 6 digits.', 'error');
+  if (prompt('Type the new passcode again:') !== code) return toast("The two passcodes don't match.", 'error');
+  try { await api.auth.changePasscode(code); toast('Passcode changed. Use the new one next time you sign in.'); } catch (e) { toastError(e); }
+}
+async function signOutTeam() {
+  await stopPush();
+  await api.auth.signOut();
+  location.replace(location.pathname + '#/');
+  location.reload();
 }
 
 // ── Shell ──────────────────────────────────────────────────────────────────
@@ -804,7 +855,9 @@ function Shell() {
   useEffect(() => { document.title = waiting ? `(${waiting}) ${PRINT_TITLE}` : PRINT_TITLE; }, [waiting]);
   const item = (href, icon, label, active, badge) => html`<a href=${href} class=${'nav-item' + (active ? ' active' : '')} aria-current=${active ? 'page' : undefined}>
     <${Icon} name=${icon} /><span>${label}</span>${badge > 0 && html`<span class="nav-badge">${badge}</span>`}</a>`;
-  const viaHub = !getKey();
+  const viaToken = !getKey();
+  const showBack = viaToken && (master || P.hub); // signed in to the Creative Hub
+  const pendingCount = P.staff.filter((s) => s.status === 'pending').length;
   return html`<div class=${'shell' + (menuOpen ? ' menu-open' : '')}>
     <header class="topbar no-print">
       <button class="icon-btn" aria-label="Menu" onClick=${() => setMenuOpen(!menuOpen)}><${Icon} name="menu" /></button><${PrintBrand} />
@@ -816,16 +869,18 @@ function Shell() {
         ${STATUS_ORDER.map((s) => item(hrefFor('orders/' + s), ORDER_STATUS[s].icon, ORDER_STATUS[s].label, current === s, s === 'completed' ? 0 : count(s)))}
         ${master && html`<div class="nav-divider"></div>
           ${item(hrefFor('form'), 'list', 'Order form', p0 === 'form')}
-          ${item(hrefFor('access'), 'key', 'Links & access', p0 === 'access')}`}
+          ${item(hrefFor('access'), 'key', 'Links & access', p0 === 'access', pendingCount)}`}
       </nav>
       <div class="sidebar-foot">
         <${InstallButton} appName=${PRINT_TITLE} />
         <${AlertToggle} />
-        ${viaHub && html`<a class="nav-item" href="../index.html"><${Icon} name="back" /><span>Back to Creative Hub</span></a>`}
+        ${showBack && html`<a class="nav-item" href="../index.html"><${Icon} name="back" /><span>Back to Creative Hub</span></a>`}
+        ${viaToken && !master && P.passcode && html`<button class="nav-item" onClick=${changeMyPasscode}><${Icon} name="key" /><span>Change my passcode</span></button>`}
         <div class="user-chip"><span class="avatar">${master ? 'M' : (P.name || 'A').trim().charAt(0).toUpperCase()}</span>
           <span class="user-email">${master ? 'Master access' : `${P.name || 'Staff'} · Admin`}</span>
-          ${!viaHub && html`<button class="icon-btn" data-tip="Forget this link on this device" aria-label="Forget this link"
+          ${!viaToken && html`<button class="icon-btn" data-tip="Forget this link on this device" aria-label="Forget this link"
             onClick=${() => { setKey(null); location.reload(); }}><${Icon} name="logout" size=${16} /></button>`}
+          ${viaToken && !master && html`<button class="icon-btn" data-tip="Sign out" aria-label="Sign out" onClick=${signOutTeam}><${Icon} name="logout" size=${16} /></button>`}
         </div>
       </div>
     </aside>
@@ -863,7 +918,7 @@ function App() {
       try {
         const me = await api.print.me(getKey());
         const orders = await api.print.orders(getKey());
-        setP({ loaded: true, role: me.role, name: me.name || '', staff: me.staff || [], devices: me.devices || [], hubLinks: !!me.hubLinks, pushKey: me.pushKey || null, questions: me.questions, settings: me.settings || null, botLinked: !!me.settings?.webhookUrl || !!me.botLinked,
+        setP({ loaded: true, role: me.role, name: me.name || '', via: me.via || (getKey() ? 'key' : 'token'), hub: !!me.hub, passcode: !!me.passcode, staff: me.staff || [], devices: me.devices || [], hubLinks: !!me.hubLinks, pushKey: me.pushKey || null, questions: me.questions, settings: me.settings || null, botLinked: !!me.settings?.webhookUrl || !!me.botLinked,
                readyMessage: me.settings?.readyMessage || me.readyMessage || '', newOrderMessage: me.settings?.newOrderMessage || me.newOrderMessage || '',
                notifyOnDone: me.notifyOnDone !== false, storage: me.storage || null,
                orders: orders.sort(byNewest) });
@@ -883,10 +938,12 @@ function App() {
   else if (phase.id === 'unsupported') body = html`<div class="auth-page"><div class="auth-card card"><${PrintBrand} /><h1>Not available</h1>
     <p class="muted">The Print Hub works with the Cloudflare or Google setup (or the demo). See README.md.</p></div></div>`;
   else if (phase.id === 'denied') body = html`<div class="auth-page"><div class="auth-card card"><${PrintBrand} /><h1>${getKey() ? 'Link not valid' : 'Welcome'}</h1>
-    <p class="muted">${getKey() ? phase.message : 'Paste the admin or master link you were given to get in — or sign in to the Creative Hub first and open Print Hub there.'}</p>
+    <p class="muted">${getKey() ? phase.message : 'Sign in with your name and passcode.'}</p>
+    ${!getKey() && html`<${TeamSignIn} />`}
+    <p class="muted small">${getKey() ? 'Or paste a link you were given:' : 'New here? Ask the owner for the join link. Have a link instead? Paste it here:'}</p>
     <${PasteLink} />
     ${getKey() && html`<button class="btn btn-ghost btn-block" onClick=${() => { setKey(null); location.reload(); }}>Forget this link</button>`}
-    <a class="btn btn-ghost btn-block" href="../index.html">Go to Creative Hub</a></div></div>`;
+    <a class="btn btn-ghost btn-block" href="../index.html">Owner sign-in (Creative Hub)</a></div></div>`;
   else body = html`<${Shell} />`;
   return html`${body}<${DialogHost} /><${InstallHelpHost} /><${ToastHost} /><${TooltipHost} />`;
 }

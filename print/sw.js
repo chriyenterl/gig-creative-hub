@@ -17,7 +17,7 @@ self.addEventListener('push', (e) => {
     timestamp: d.at || Date.now(),
     icon: new URL('../icons/print-192.png', self.registration.scope).href,
     badge: new URL('../icons/print-192.png', self.registration.scope).href,
-    data: { url: d.orderId ? 'index.html#/order/' + d.orderId : 'index.html' },
+    data: { url: d.url || (d.orderId ? 'index.html#/order/' + d.orderId : 'index.html') },
   }));
 });
 

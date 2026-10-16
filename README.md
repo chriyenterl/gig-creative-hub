@@ -95,8 +95,9 @@ CLOUDFLARE_API_URL: 'https://gig-hub-api.yourname.workers.dev',
 ### 6. Create your admin account
 Open the site. The first time, it asks you to **create the admin account** (your email + a password).
 Do this straight away — the first person to open it becomes the owner.
-Give your team **team links** (Print Hub → Links & access) — no accounts or passwords needed. Owners who manage the team
-and settings can be added in **Settings → Team members** (you give each a temporary password).
+Then share the **join link** with your team (Print Hub → Links & access → Team): each person types their name and picks a
+6-digit passcode, you approve them, and they sign in with name + passcode — no email needed. Other **owners** (who can
+manage everything) can be added in **Settings → Owners** with an email and a temporary password.
 
 **Updating the server later:** run `npx wrangler deploy` again in the `cloudflare` folder. The address stays the same.
 
@@ -134,19 +135,29 @@ Open it from the Creative Hub sidebar (**Print Hub**). Owners signed in to the h
 | Link | For | Can do |
 |---|---|---|
 | **Customer order link** — `print/order.html#…` | All customers (one shared link) | Fill in the order form, attach artwork, submit, get an order number |
-| **Team link — Print Hub only** — `print/index.html#k=…` | Production staff — **one link per person** | See all orders, move them New → Pending → Completed, notes, job sheets |
-| **Team link — Print Hub + Creative Hub** — `index.html#k=…` | Team members who also work on content — **one per person** | Everything above, plus the whole Creative Hub (library, uploads, review, talents, upload links, seasons) |
+| **Join link** — `join.html#…` | Your team (one shared link) | Ask to join with their name + a 6-digit passcode; you approve each person as **Print Hub only** or **Print Hub + Creative Hub** |
 | **Master link** — `print/index.html#k=…` | You | Everything, plus: edit the order form, links & bot settings, delete orders |
 
-All of them are in **Print Hub → Links & access** (master). **Team links:** pick **Print Hub only** or **Print Hub + Creative
-Hub**, type the person's name and click **Create link** — the link is copied, ready to send. They don't need an account or
-password: they open the link and they're in. A Creative Hub link opens the Creative Hub with the Print Hub in its menu; their
-name shows in the menu ("Ali · Admin") and order history records who moved each order ("by Ali"). Team-link users can do the
-everyday work but **only owners (password sign-in) can manage team members, the storage limit and Print Hub settings**.
-Each person's link can be **turned off**, **changed** (their old one — and any session it opened — stops working immediately),
-switched between the two kinds, **renamed** or **deleted** without affecting anyone else, and you can see when it was last
-opened. On an installed iPhone app, paste the link once on the sign-in screen ("Have a team link?"). The customer link can be
-changed or disabled; the master link can be changed. A link is remembered on the device it's opened on; "Forget this link" signs it out.
+All of them are in **Print Hub → Links & access** (master).
+
+**Your team — join link + passcode (no email):**
+1. Share the **join link** in your team group. A new person opens it, types their **name** and picks a **6-digit passcode**.
+2. You get a notification (“Ali wants to join”) and the request appears under **Waiting for approval** — tap
+   **Approve — Print Hub only**, **Approve — Print Hub + Creative Hub**, or **Decline**.
+3. They sign in on any phone or computer with **name + passcode** (sign-in page → **Team** tab, or the Print Hub's welcome
+   screen). Print-Hub-only people go straight to the Print Hub; the others get the Creative Hub with the Print Hub in its menu.
+   Their name shows in the menu and in order history (“by Ali”).
+- **Forgot passcode?** Tap **Reset passcode** next to their name — you'll see a new 6-digit passcode to tell them. It also signs
+  them out everywhere. They can change their passcode any time (Settings → My account, or **Change my passcode** in the Print Hub menu).
+- **Remove access:** **Turn off** (temporary — turn on again any time) or **Remove** (for good). Either way they're signed out on
+  every device straight away and their phone stops getting order alerts.
+- Also per person: **Add Creative Hub / Make Print Hub only**, **Rename** (that's the name they sign in with), and **Copy sign-in
+  link** (a personal link that signs them in without a passcode — handy for a shared shop computer).
+- Team members can do the everyday work; **only owners (email + password) can manage the team, the storage limit and Print Hub
+  settings**. Wrong passcodes lock that name for 15 minutes after 5 tries. Turn the join link off or **Change link** if it's
+  shared too widely — people already on the team aren't affected.
+
+The customer link can be changed or disabled; the master link can be changed. A link is remembered on the device it's opened on; "Forget this link" signs it out.
 
 **Order form:** **Order form** page (master). The default form asks: name, company, phone/WhatsApp, what to print, quantity,
 **size**, **paper type** (hard card / normal / not sure), **lamination** (only shown when the item isn't stickers or a banner),
@@ -246,6 +257,7 @@ The Print Hub works with the Cloudflare or Google setup (or demo mode) — not w
 ```
 index.html                  Team app (login required)
 upload.html                 Creator upload page (opened via a private link)
+join.html, js/join.js       Join page: new team members ask to join with name + passcode
 config.js                   Your settings — the only file you must edit
 css/styles.css              Look & feel (light + dark mode, mobile friendly)
 js/app.js, js/views/*.js    The screens

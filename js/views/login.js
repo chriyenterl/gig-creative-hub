@@ -1,7 +1,7 @@
 import { html, useState, useEffect } from '../lib.js';
 import { api } from '../store.js';
 import { CONFIG } from '../../config.js';
-import { Icon, toastError } from '../ui.js';
+import { Icon, Tabs, PasscodeInput, toastError } from '../ui.js';
 
 export function Brand({ small }) {
   const words = CONFIG.BRAND_NAME.trim().split(/\s+/);
@@ -43,10 +43,20 @@ export function Login({ linkError }) {
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
   const [firstRun, setFirstRun] = useState(false);
-  useEffect(() => { api.auth.needsSetup?.().then(setFirstRun).catch(() => {}); }, []);
+  const teamSignIn = !!api.auth.signInWithPasscode;
+  const [mode, setMode] = useState(teamSignIn ? 'team' : 'owner'); // the team: name + passcode · owners: email + password
+  const [teamName, setTeamName] = useState('');
+  const [code, setCode] = useState('');
+  useEffect(() => { api.auth.needsSetup?.().then((first) => { setFirstRun(first); if (first) setMode('owner'); }).catch(() => {}); }, []);
 
   const submit = async (e) => {
     e.preventDefault();
+    if (mode === 'team' && !firstRun) {
+      if (!teamName.trim() || code.length !== 6) return toastError(new Error('Type your name and your 6-digit passcode.'));
+      setBusy(true);
+      try { await api.auth.signInWithPasscode(teamName.trim(), code); } catch (err) { toastError(err); setBusy(false); setCode(''); }
+      return;
+    }
     if (firstRun && password.length < 8) return toastError(new Error('Choose a password of at least 8 characters.'));
     setBusy(true);
     try {
@@ -69,7 +79,15 @@ export function Login({ linkError }) {
         <p class="muted">${firstRun ? 'This is the first sign-in, so this account becomes the owner. You can add teammates later in Settings.' : 'Sign in to your team workspace.'}</p>
       </div>
       ${linkError && html`<p class="storage-banner full"><${Icon} name="alert" size=${16} /><span>${linkError}</span></p>`}
-      ${sent ? html`<p class="notice"><${Icon} name="mail" size=${16} /> Check your inbox — we sent a sign-in link to <b>${email}</b>.</p>` : html`
+      ${teamSignIn && !firstRun && html`<div class="auth-tabs"><${Tabs} items=${[{ id: 'team', label: 'Team' }, { id: 'owner', label: 'Owner' }]} value=${mode} onChange=${setMode} /></div>`}
+      ${mode === 'team' && !firstRun ? html`
+        <label class="field"><span class="field-label">Your name</span>
+          <input autocomplete="username" value=${teamName} onInput=${(e) => setTeamName(e.target.value)} autofocus /></label>
+        <${PasscodeInput} label="Passcode" value=${code} onInput=${setCode} autocomplete="current-password" />
+        <button class="btn btn-primary btn-block btn-lg" disabled=${busy || code.length !== 6 || !teamName.trim()}>${busy ? 'One moment…' : 'Sign in'}</button>
+        <p class="muted small center">New here? Ask the owner for the join link. Forgot your passcode? The owner can give you a new one.</p>
+        <${PasteTeamLink} />`
+      : sent ? html`<p class="notice"><${Icon} name="mail" size=${16} /> Check your inbox — we sent a sign-in link to <b>${email}</b>.</p>` : html`
         ${firstRun && html`<label class="field"><span class="field-label">Your name</span>
           <input autocomplete="name" value=${name} onInput=${(e) => setName(e.target.value)} /></label>`}
         <label class="field"><span class="field-label">Email</span>
@@ -78,7 +96,6 @@ export function Login({ linkError }) {
           <input type="password" autocomplete=${firstRun ? 'new-password' : 'current-password'} value=${password} onInput=${(e) => setPassword(e.target.value)} /></label>
         <button class="btn btn-primary btn-block btn-lg" disabled=${busy || !password}>${busy ? 'One moment…' : firstRun ? 'Create account' : 'Sign in'}</button>
         ${api.auth.magicLink && !firstRun && html`<button type="button" class="btn btn-ghost btn-block" disabled=${busy} onClick=${magic}>Email me a sign-in link instead</button>`}`}
-      ${!firstRun && html`<${PasteTeamLink} />`}
       <p class="muted small center">Team access only. Creators: please use the private upload link you were sent.</p>
     </form>
   </div>`;

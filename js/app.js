@@ -155,6 +155,7 @@ function App() {
     let lastKey, stop = () => {}, alive = true;
     const evaluate = async (user) => {
       if (!user) return setPhase({ id: 'signedOut' });
+      if (user.viaLink && user.hub === false) return location.replace('print/index.html'); // Print Hub only
       setPhase({ id: 'loading' });
       try {
         if (!(await api.auth.isTeam())) return setPhase({ id: 'notTeam', email: user.email });

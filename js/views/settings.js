@@ -3,7 +3,7 @@ import { useStore, api, insertRow, deleteRow, setState, getState } from '../stor
 import { DEMO, MODE } from '../api.js';
 import { CONFIG } from '../../config.js';
 import { fmtBytes, fmtGB } from '../util.js';
-import { Icon, PageHead, confirmDialog, toast, toastError } from '../ui.js';
+import { Icon, PageHead, PasscodeInput, confirmDialog, toast, toastError } from '../ui.js';
 
 function Team() {
   const { team_members, user } = useStore();
@@ -38,7 +38,9 @@ function Team() {
     <p class="muted small">You're using a team link. Only owners (who sign in with a password) can add or remove people.</p>
   </section>`;
   return html`<section class="card">
-    <header class="card-head"><h2>Team members</h2><span class="muted">People who can open this app</span></header>
+    <header class="card-head"><h2>Owners</h2><span class="muted">Sign in with email + password · can manage everything</span></header>
+    ${api.auth.signInWithPasscode && html`<p class="muted small">Your team doesn't need to be added here: they join with the join link and sign in with
+      their name + passcode. Approve them in <a class="link" href="print/index.html#/access">Print Hub → Links & access</a>.</p>`}
     <ul class="plain-list">
       ${team_members.map((m) => html`<li key=${m.id}>
         <span><span class="avatar">${(m.name || m.email).slice(0, 1).toUpperCase()}</span>
@@ -66,13 +68,25 @@ function Team() {
 function Account() {
   const { user } = useStore();
   const [pw, setPw] = useState('');
+  const [code, setCode] = useState('');
+  const [again, setAgain] = useState('');
   const change = async () => {
     if (pw.length < 8) return toast('Use at least 8 characters.', 'error');
     try { await api.auth.changePassword(pw); setPw(''); toast('Password changed.'); } catch (e) { toastError(e); }
   };
+  const changeCode = async () => {
+    if (code.length !== 6) return toast('Your passcode must be exactly 6 digits.', 'error');
+    if (code !== again) return toast("The two passcodes don't match.", 'error');
+    try { await api.auth.changePasscode(code); setCode(''); setAgain(''); toast('Passcode changed. Use the new one next time you sign in.'); } catch (e) { toastError(e); }
+  };
   return html`<section class="card">
     <header class="card-head"><h2>My account</h2></header>
-    <p>${user?.viaLink ? html`Signed in with your team link as <b>${user.name}</b>` : html`Signed in as <b>${user?.email}</b>`}</p>
+    <p>${user?.viaLink ? html`Signed in as <b>${user.name}</b> (team member)` : html`Signed in as <b>${user?.email}</b> (owner)`}</p>
+    ${!DEMO && user?.viaLink && user.passcode && api.auth.changePasscode && html`<div class="form-grid">
+      <${PasscodeInput} label="New 6-digit passcode" value=${code} onInput=${setCode} />
+      <${PasscodeInput} label="Type it again" value=${again} onInput=${setAgain} />
+    </div>
+    <div class="page-actions"><button class="btn" disabled=${code.length !== 6} onClick=${changeCode}>Change passcode</button></div>`}
     ${!DEMO && !user?.viaLink && html`<div class="inline-form">
       <input type="password" placeholder="New password" value=${pw} onInput=${(e) => setPw(e.target.value)} autocomplete="new-password" />
       <button class="btn" onClick=${change}>Change password</button>

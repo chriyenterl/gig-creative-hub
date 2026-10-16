@@ -240,13 +240,15 @@ function printSeed() {
   return {
     v: 4,
     // Fixed demo links, so the customer link also works in a private window or another browser on this computer.
-    settings: { masterKey: 'demomasterlink', orderKey: 'demoorderlink', orderActive: true, nextNo: 1006,
+    settings: { masterKey: 'demomasterlink', orderKey: 'demoorderlink', orderActive: true, joinKey: 'demojoinlink', joinActive: true, nextNo: 1006,
                 webhookUrl: '', webhookSecret: '', readyMessage: DEFAULT_READY_MESSAGE, newOrderMessage: DEFAULT_NEW_MESSAGE,
                 notifyOnNew: true, notifyOnDone: true },
     // One private admin link per staff member.
     staff: [
-      { id: uid(), name: 'Production team', key: 'demoadminlink', active: true, hub: false, last_used_at: ago(2), created_at: ago(400) },
-      { id: uid(), name: 'Ali', key: 'demoalilink', active: true, hub: true, last_used_at: null, created_at: ago(30) },
+      // Demo only: passcodes are kept as plain text here (the real server stores them hashed).
+      { id: uid(), name: 'Production team', key: 'demoadminlink', active: true, hub: false, status: 'approved', pin: null, last_used_at: ago(2), created_at: ago(400) },
+      { id: uid(), name: 'Ali', key: 'demoalilink', active: true, hub: true, status: 'approved', pin: '123456', last_used_at: null, created_at: ago(30) },
+      { id: uid(), name: 'Siti', key: newToken(), active: true, hub: false, status: 'pending', pin: '654321', requested_at: ago(1), created_at: ago(1) },
     ],
     questions: DEFAULT_QUESTIONS,
     orders: [
@@ -327,9 +329,39 @@ export function createDemoBackend() {
         if (!st) throw new Error('This team link is no longer valid. Please ask for a new one.');
         if (!st.hub) throw Object.assign(new Error('This link opens the Print Hub only.'), { code: 'PRINT_ONLY' });
       },
+      // Team sign-in with name + 6-digit passcode (demo: checks it, then you carry on as the demo user).
+      async signInWithPasscode(name, passcode) {
+        const ln = String(name || '').trim().toLowerCase();
+        let st = null;
+        try { st = (JSON.parse(localStorage.getItem(PRINT_KEY))?.staff || []).find((x) => x.name.toLowerCase() === ln && x.pin && x.pin === passcode); } catch {}
+        if (!st) throw new Error("That name and passcode don't match.");
+        if (st.status === 'pending') throw new Error("You're waiting for approval — ask the owner to approve you, then try again.");
+        if (!st.active) throw new Error('Your access is turned off. Please ask the owner.');
+      },
+      async changePasscode() {},
       async signOut() {},
       async changePassword() {},
       async isTeam() { return true; },
+    },
+
+    // Join page (demo): asks to join with a name + passcode; the request shows up in Print Hub → Links & access.
+    join: {
+      async info(key) {
+        try { const s = JSON.parse(localStorage.getItem(PRINT_KEY))?.settings; return { ok: !!(s?.joinActive && key === s.joinKey) }; } catch { return { ok: false }; }
+      },
+      async request(key, name, passcode) {
+        let d = null;
+        try { d = JSON.parse(localStorage.getItem(PRINT_KEY)); } catch {}
+        if (!d || !d.settings?.joinActive || key !== d.settings.joinKey) throw new Error('This join link is no longer active. Please ask the owner for a new one.');
+        name = String(name || '').trim().replace(/\s+/g, ' ');
+        if (name.length < 2) throw new Error('Type your name.');
+        if (!/^\d{6}$/.test(String(passcode))) throw new Error('Your passcode must be exactly 6 digits.');
+        if (d.staff.some((x) => x.name.toLowerCase() === name.toLowerCase())) throw new Error('That name is already taken — add your surname or an initial (e.g. "Ali K").');
+        const now = new Date().toISOString();
+        d.staff.push({ id: uid(), name, key: newToken(), active: true, hub: false, status: 'pending', pin: String(passcode), requested_at: now, created_at: now });
+        try { localStorage.setItem(PRINT_KEY, JSON.stringify(d)); } catch {}
+        return { status: 'pending', name };
+      },
     },
 
     async list(table, { eq, order = ['created_at', false] } = {}) {
@@ -419,6 +451,12 @@ export function createDemoBackend() {
               pdb = x;
               psave();
             }
+            if (!x.settings.joinKey) { // saved before joining with a passcode existed
+              Object.assign(x.settings, { joinKey: 'demojoinlink', joinActive: true });
+              x.staff.forEach((st) => { st.status = st.status || 'approved'; });
+              pdb = x;
+              psave();
+            }
             return (pdb = x);
           }
         } catch {}
@@ -432,16 +470,16 @@ export function createDemoBackend() {
         const d = pload();
         if (!key) return { role: 'master', who: 'Demo user' }; // demo: everyone coming from the hub is on the team
         if (key === d.settings.masterKey) return { role: 'master', who: 'Master' };
-        const st = d.staff.find((x) => x.key === key && x.active);
+        const st = d.staff.find((x) => x.key === key && x.active && x.status !== 'pending');
         if (st) {
           if (!st.last_used_at || Date.now() - new Date(st.last_used_at) > 3600e3) { st.last_used_at = new Date().toISOString(); psave(); }
-          return { role: 'admin', who: st.name };
+          return { role: 'admin', who: st.name, hub: !!st.hub };
         }
         const e = new Error('This access link is no longer valid. Please ask for a new one.'); e.code = 'PRINT_AUTH'; throw e;
       };
       const role = (key) => actor(key).role;
       const needMaster = (key) => { if (role(key) !== 'master') throw new Error('Only the master link can do that.'); };
-      const staffOut = () => clone(pload().staff);
+      const staffOut = () => pload().staff.map(({ pin, ...x }) => ({ ...clone(x), status: x.status || 'approved', passcode: !!pin }));
       const staffName = (n) => { n = String(n || '').trim().slice(0, 60); if (!n) throw new Error("Type the person's name."); return n; };
       const staffFind = (id) => { const x = pload().staff.find((s) => s.id === id); if (!x) throw new Error('That link no longer exists.'); return x; };
       const orderOk = (k) => pload().settings.orderActive && k === pload().settings.orderKey;
@@ -505,7 +543,7 @@ export function createDemoBackend() {
           const a = actor(key);
           const r = a.role;
           const st = pload().settings;
-          return { role: r, name: a.who, hubLinks: true, questions: clone(pload().questions), botLinked: !!st.webhookUrl, readyMessage: st.readyMessage,
+          return { role: r, name: a.who, via: key ? 'key' : 'token', hub: !!a.hub, hubLinks: true, questions: clone(pload().questions), botLinked: !!st.webhookUrl, readyMessage: st.readyMessage,
                    newOrderMessage: st.newOrderMessage, notifyOnDone: st.notifyOnDone, storage: demoStorage(),
                    ...(r === 'master' ? { settings: settingsOut(), staff: staffOut() } : {}) };
         },
@@ -570,7 +608,7 @@ export function createDemoBackend() {
         },
         async regenerate(key, which) {
           needMaster(key);
-          const field = { order: 'orderKey', master: 'masterKey' }[which];
+          const field = { order: 'orderKey', master: 'masterKey', join: 'joinKey' }[which];
           if (!field) throw new Error('Admin links are per person now — use Staff links.');
           pload().settings[field] = newToken();
           psave();
@@ -578,8 +616,9 @@ export function createDemoBackend() {
         },
         async setActive(key, which, active) {
           needMaster(key);
-          if (which !== 'order') throw new Error("That link can't be turned off.");
-          pload().settings.orderActive = !!active;
+          const field = { order: 'orderActive', join: 'joinActive' }[which];
+          if (!field) throw new Error("That link can't be turned off.");
+          pload().settings[field] = !!active;
           psave();
           return settingsOut();
         },
@@ -603,6 +642,19 @@ export function createDemoBackend() {
           Object.assign(staffFind(id), { key: newToken(), last_used_at: null });
           psave();
           return staffOut();
+        },
+        async staffApprove(key, id, hub) {
+          needMaster(key);
+          Object.assign(staffFind(id), { status: 'approved', hub: !!hub, active: true });
+          psave();
+          return staffOut();
+        },
+        async staffResetPasscode(key, id) {
+          needMaster(key);
+          const passcode = String(Math.floor(Math.random() * 1e6)).padStart(6, '0');
+          Object.assign(staffFind(id), { pin: passcode, key: newToken() });
+          psave();
+          return { staff: staffOut(), passcode };
         },
         async staffDelete(key, id) {
           needMaster(key);

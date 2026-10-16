@@ -22,7 +22,7 @@
 const TOKEN_DAYS = 30;           // how long a team login lasts
 const PBKDF2_ROUNDS = 20000;     // password hashing strength (kept modest for the free plan's CPU limit)
 const CHUNK = 10 * 1024 * 1024;  // upload part size — big files are sent in pieces of this size
-const SCHEMA_V = '4';            // bump when SCHEMA changes so new columns get added
+const SCHEMA_V = '5';            // bump when SCHEMA changes so new columns get added
 const GB = 1e9;                  // storage is counted the way Cloudflare bills it (1 GB = 1,000,000,000 bytes)
 const DEFAULT_LIMIT_GB = 10;     // uploads stop here (R2's free allowance) — change it in Settings
 
@@ -45,8 +45,10 @@ const SCHEMA = {
   print_orders: { cols: ['id', 'order_no', 'status', 'customer_name', 'company', 'phone', 'email', 'summary', 'quantity',
                          'due_date', 'answers', 'history', 'internal_notes', 'created_at', 'updated_at'],
                   json: ['answers', 'history'] },
-  // Team links: hub_access = true opens the Creative Hub as well as the Print Hub.
-  print_staff:  { cols: ['id', 'name', 'link_key', 'is_active', 'hub_access', 'last_used_at', 'created_at'], bool: ['is_active', 'hub_access'] },
+  // The team (everyone except owners): they join with a name + 6-digit passcode and the owner approves them.
+  // hub_access = true opens the Creative Hub as well as the Print Hub. link_key = their personal sign-in link.
+  print_staff:  { cols: ['id', 'name', 'login_name', 'pass_hash', 'pass_salt', 'status', 'link_key', 'is_active', 'hub_access',
+                         'requested_at', 'last_used_at', 'created_at'], bool: ['is_active', 'hub_access'] },
   // Phones and computers that get a notification for every new order (even with the app closed).
   push_subs:    { cols: ['id', 'endpoint', 'p256dh', 'auth', 'who', 'device', 'access', 'ref', 'key_hash', 'created_at'] },
 };
@@ -59,7 +61,7 @@ const DEFAULTS = {
   assets:       { category: 'final', media_type: 'other', source: 'team', tags: [], status: 'pending', use_count: 0 },
   asset_usage:  {},
   print_orders: { status: 'new', history: [] },
-  print_staff:  { is_active: true, hub_access: false },
+  print_staff:  { is_active: true, hub_access: false, status: 'approved' },
   push_subs:    {},
 };
 
@@ -70,6 +72,7 @@ const INDEXES = [
   'CREATE INDEX IF NOT EXISTS assets_path ON assets (storage_path)',
   'CREATE INDEX IF NOT EXISTS usage_asset ON asset_usage (asset_id)',
   'CREATE UNIQUE INDEX IF NOT EXISTS print_staff_key ON print_staff (link_key)',
+  'CREATE UNIQUE INDEX IF NOT EXISTS print_staff_login ON print_staff (login_name)',
   'CREATE UNIQUE INDEX IF NOT EXISTS push_subs_endpoint ON push_subs (endpoint)',
 ];
 
@@ -108,6 +111,7 @@ export default {
       if (url.pathname === '/api' && request.method === 'POST') {
         let req;
         try { req = JSON.parse(await request.text() || '{}'); } catch { throw new AppError('Bad request.'); }
+        req._ip = request.headers.get('CF-Connecting-IP') || 'local';
         return json({ ok: true, data: await route(req, ctx) });
       }
       if (url.pathname.startsWith('/upload/')) return json({ ok: true, data: await handleUpload(request, url) });
@@ -146,6 +150,10 @@ async function route(req, ctx) {
   if (a === 'setupAdmin') return setupAdmin(req);
   if (a === 'login') return login(req);
   if (a === 'linkLogin') return linkLogin(req.linkKey);
+  if (a === 'passcodeLogin') return passcodeLogin(req);
+  if (a === 'joinInfo') return { ok: await joinKeyOk(req.joinKey) };
+  if (a === 'joinRequest') return joinRequest(req, ctx);
+  if (a === 'changePasscode') return changePasscode(req);
   if (a === 'linkInfo') return linkInfo(req.linkToken);
   if (a === 'linkStartUpload') return linkStartUpload(req);
   if (a === 'linkSubmit') return linkSubmit(req);
@@ -154,6 +162,7 @@ async function route(req, ctx) {
 
   // ── Team only ──
   const me = await verify(req.token);
+  if (me.viaLink && !me.hub && a !== 'me') fail('Your access is for the Print Hub only.', 'PRINT_ONLY');
   const ownersOnly = (what) => { if (me.viaLink) fail(`Only owners (who sign in with a password) can ${what}.`); };
   if (a === 'changePassword') ownersOnly('change passwords');
   if (a === 'setStorageLimit') ownersOnly('change the storage limit');
@@ -217,6 +226,8 @@ async function setup() {
     const have = new Set((await DB.prepare(`PRAGMA table_info(${t})`).all()).results.map((c) => c.name));
     for (const c of SCHEMA[t].cols) if (!have.has(c)) await DB.prepare(`ALTER TABLE ${t} ADD COLUMN ${c} ${colType(t, c)}`).run();
   }
+  // Team members made before joining existed count as approved.
+  await DB.prepare("UPDATE print_staff SET status = 'approved' WHERE status IS NULL").run();
   await DB.batch(INDEXES.map((s) => DB.prepare(s)));
   if ((await count('seasons')) === 0) {
     await insertRows('seasons', SEED_SEASONS.map((s, i) => ({ name: s[0], color: s[1], sort_order: i + 1 })));
@@ -493,10 +504,10 @@ async function verify(token) {
   let data;
   try { data = JSON.parse(new TextDecoder().decode(fromB64url(parts[0]))); } catch { fail('Please sign in again.', 'AUTH'); }
   if (!data.x || data.x < Date.now()) fail('Your session expired. Please sign in again.', 'AUTH');
-  if (data.s) { // signed in with a team link: valid while that link is on, unchanged and still has Creative Hub access
+  if (data.s) { // a team member: valid while they're approved and on, and their passcode/link hasn't been reset
     const st = await getRow('print_staff', data.s);
-    if (!st || !st.is_active || !st.hub_access || (await sha256(st.link_key)).slice(0, 16) !== data.k) {
-      fail('This team link was changed or turned off. Please ask for a new one.', 'AUTH');
+    if (!st || !st.is_active || st.status !== 'approved' || (await sessionMark(st)) !== data.k) {
+      fail('Please sign in again.', 'AUTH');
     }
     return linkUser(st);
   }
@@ -513,12 +524,13 @@ async function findMember(email) {
 }
 
 function publicMember(m) {
-  if (m.viaLink) return { id: m.id, email: null, name: m.name, created_at: m.created_at, links: null, viaLink: true };
+  if (m.viaLink) return { id: m.id, email: null, name: m.name, created_at: m.created_at, links: null, viaLink: true, hub: m.hub, passcode: m.passcode };
   return { id: m.id, email: m.email, name: m.name, created_at: m.created_at, links: null };
 }
 
-// Someone using a team link with Creative Hub access (no account, no password).
-const linkUser = (st) => ({ id: 'link:' + st.id, email: null, name: st.name, created_at: st.created_at, viaLink: true, staffId: st.id, linkKey: st.link_key });
+// A team member (not an owner): signed in with their name + passcode, or their personal link.
+const linkUser = (st) => ({ id: 'link:' + st.id, email: null, name: st.name, created_at: st.created_at, viaLink: true,
+  hub: !!st.hub_access, passcode: !!st.pass_hash, staffId: st.id, linkKey: st.link_key });
 
 async function staffByKey(key) {
   if (!key) return null;
@@ -531,13 +543,93 @@ async function touchStaff(st) { // "last opened" — written at most once an hou
   }
 }
 
+// Sessions are tied to the person's current link and passcode — resetting either signs them out everywhere.
+const sessionMark = async (st) => (await sha256(st.link_key + '|' + (st.pass_hash || ''))).slice(0, 16);
+async function teamSession(st) {
+  const payload = b64url(enc.encode(JSON.stringify({ s: st.id, k: await sessionMark(st), x: Date.now() + TOKEN_DAYS * 86400000 })));
+  return { token: payload + '.' + await sign(payload), user: publicMember(linkUser(st)) };
+}
+
 async function linkLogin(key) {
   const st = await staffByKey(key);
-  if (!st || !st.is_active) fail('This team link is no longer valid. Please ask for a new one.');
+  if (!st || !st.is_active || st.status !== 'approved') fail('This team link is no longer valid. Please ask for a new one.');
   if (!st.hub_access) fail('This link opens the Print Hub only.', 'PRINT_ONLY');
   await touchStaff(st);
-  const payload = b64url(enc.encode(JSON.stringify({ s: st.id, k: (await sha256(st.link_key)).slice(0, 16), x: Date.now() + TOKEN_DAYS * 86400000 })));
-  return { token: payload + '.' + await sign(payload), user: publicMember(linkUser(st)) };
+  return teamSession(st);
+}
+
+// ── Name + 6-digit passcode ──
+const loginName = (n) => String(n || '').trim().replace(/\s+/g, ' ').toLowerCase();
+function checkPasscode(p) {
+  if (!/^\d{6}$/.test(String(p || ''))) fail('Your passcode must be exactly 6 digits.');
+}
+const cleanPersonName = (n) => {
+  const name = String(n || '').trim().replace(/\s+/g, ' ');
+  if (name.length < 2) fail('Type your name.');
+  if (name.length > 40) fail('Please use a shorter name (up to 40 characters).');
+  return name;
+};
+
+// Counts tries for a key (a name, or a network address) — blocks for 15 minutes after `max`.
+async function guard(key, max, message = 'Too many tries. Please wait 15 minutes and try again.') {
+  const now = Date.now();
+  let t = { n: 0, until: 0 };
+  try { t = JSON.parse(await getSetting(key)) || t; } catch { /* first try */ }
+  if (t.until > now && t.n >= max) fail(message);
+  return {
+    count: () => setSetting(key, JSON.stringify({ n: t.until > now ? t.n + 1 : 1, until: now + 900000 })),
+    clear: async () => { if (t.n) await DB.prepare('DELETE FROM settings WHERE key = ?').bind(key).run(); },
+  };
+}
+
+async function passcodeLogin(req) {
+  const ln = loginName(req.name);
+  const byName = await guard('pc:' + ln, 5);
+  const byIp = await guard('pcip:' + req._ip, 30);
+  const r = ln ? await DB.prepare('SELECT * FROM print_staff WHERE login_name = ?').bind(ln).first() : null;
+  const st = r && rowOut('print_staff', r);
+  const good = st && st.pass_hash && /^\d{6}$/.test(String(req.passcode || '')) && sameText(await hashPassword(req.passcode, st.pass_salt), st.pass_hash);
+  if (!good) { await byName.count(); await byIp.count(); fail("That name and passcode don't match."); }
+  await byName.clear();
+  if (st.status !== 'approved') fail("You're waiting for approval — ask the owner to approve you, then try again.", 'PENDING');
+  if (!st.is_active) fail('Your access is turned off. Please ask the owner.');
+  await touchStaff(st);
+  return teamSession(st);
+}
+
+async function changePasscode(req) {
+  const me = await verify(req.token);
+  if (!me.viaLink) fail('Owners sign in with a password — change it in Settings.');
+  checkPasscode(req.passcode);
+  const salt = uuid();
+  const st = await updateRow('print_staff', me.staffId, { pass_salt: salt, pass_hash: await hashPassword(req.passcode, salt) });
+  return teamSession(st);
+}
+
+// ── Joining: one shared join link; new people wait for the owner's approval ──
+async function joinKeyOk(key) {
+  const s = await printSettings();
+  return !!(s.joinActive && key && sameText(key, s.joinKey));
+}
+
+async function joinRequest(req, ctx) {
+  const ipGuard = await guard('join:' + req._ip, 5, 'Too many sign-ups from here. Please wait 15 minutes.');
+  if (!(await joinKeyOk(req.joinKey))) fail('This join link is no longer active. Please ask the owner for a new one.');
+  const name = cleanPersonName(req.name);
+  checkPasscode(req.passcode);
+  await ipGuard.count();
+  const ln = loginName(name);
+  if (await DB.prepare('SELECT 1 FROM print_staff WHERE login_name = ?').bind(ln).first()) {
+    fail('That name is already taken — add your surname or an initial (e.g. "Ali K").');
+  }
+  const waiting = (await DB.prepare("SELECT COUNT(*) AS n FROM print_staff WHERE status = 'pending'").first()).n;
+  if (waiting >= 30) fail('There are too many people waiting for approval. Please ask the owner.');
+  const salt = uuid();
+  const st = await insertRow('print_staff', { name, login_name: ln, pass_salt: salt, pass_hash: await hashPassword(req.passcode, salt),
+    status: 'pending', link_key: newKey(), is_active: true, hub_access: false, requested_at: nowIso() });
+  ctx.waitUntil(pushOwners({ title: `${name} wants to join`, body: 'Tap to approve or decline.', url: 'index.html#/access', tag: 'join-' + st.id, at: Date.now() })
+    .catch((e) => console.error(e)));
+  return { status: 'pending', name };
 }
 
 async function setupAdmin(req) {
@@ -858,6 +950,7 @@ async function printSettings() {
     await DB.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('PRINT_SETTINGS', ?)").bind(JSON.stringify(s)).run();
     s = JSON.parse(await getSetting('PRINT_SETTINGS')); // another request may have created them first
   }
+  if (!s.joinKey) { s.joinKey = newKey(); s.joinActive = true; await savePrintSettings(s); }
   if (!s.readyMessage) s.readyMessage = DEFAULT_READY_MESSAGE;
   if (!s.newOrderMessage) s.newOrderMessage = DEFAULT_NEW_MESSAGE;
   if (s.notifyOnNew === undefined) s.notifyOnNew = true;
@@ -886,18 +979,18 @@ async function printOrderKeyOk(key) {
 // Who is using the Print Hub: the master link, one person's staff link, or someone signed in to the Creative Hub.
 async function printActor(req) {
   const s = await printSettings();
-  if (req.printKey && sameText(req.printKey, s.masterKey)) return { role: 'master', who: 'Master', access: 'master', keyHash: await sha256(s.masterKey) };
+  if (req.printKey && sameText(req.printKey, s.masterKey)) return { role: 'master', who: 'Master', access: 'master', keyHash: await sha256(s.masterKey), via: 'key' };
   if (req.printKey) {
     const st = await staffByKey(req.printKey);
-    if (st && st.is_active) {
+    if (st && st.is_active && st.status === 'approved') {
       await touchStaff(st);
-      return { role: 'admin', who: st.name || 'Admin', access: 'staff', ref: st.id, keyHash: await sha256(st.link_key) };
+      return { role: 'admin', who: st.name || 'Admin', access: 'staff', ref: st.id, keyHash: await sha256(st.link_key), via: 'key', hub: st.hub_access };
     }
   }
   if (req.token) {
     const m = await verify(req.token);
-    if (m.viaLink) return { role: 'admin', who: m.name, access: 'staff', ref: m.staffId, keyHash: await sha256(m.linkKey) };
-    return { role: 'master', who: m.name || m.email, access: 'team', ref: m.email };
+    if (m.viaLink) return { role: 'admin', who: m.name, access: 'staff', ref: m.staffId, keyHash: await sha256(m.linkKey), via: 'token', hub: m.hub, passcode: m.passcode };
+    return { role: 'master', who: m.name || m.email, access: 'team', ref: m.email, via: 'token', hub: true };
   }
   fail('This access link is no longer valid. Please ask for a new one.', 'PRINT_AUTH');
 }
@@ -905,7 +998,7 @@ async function printActor(req) {
 // ── Staff links: one private admin link per person, no account needed ──
 async function staffList() {
   return (await readTable('print_staff')).map((x) => ({ id: x.id, name: x.name, key: x.link_key, active: x.is_active, hub: x.hub_access,
-    last_used_at: x.last_used_at, created_at: x.created_at }));
+    status: x.status || 'approved', passcode: !!x.pass_hash, requested_at: x.requested_at, last_used_at: x.last_used_at, created_at: x.created_at }));
 }
 
 const cleanStaffName = (name) => {
@@ -922,7 +1015,12 @@ async function staffAdd(name, hub) {
 
 async function staffUpdate(id, patch) {
   const p = {};
-  if (patch.name !== undefined) p.name = cleanStaffName(patch.name);
+  if (patch.name !== undefined) {
+    p.name = cleanStaffName(patch.name);
+    p.login_name = loginName(p.name);
+    const taken = await DB.prepare('SELECT id FROM print_staff WHERE login_name = ? AND id <> ?').bind(p.login_name, String(id || '')).first();
+    if (taken) fail('Someone already has that name — add a surname or an initial.');
+  }
   if (patch.active !== undefined) p.is_active = !!patch.active;
   if (patch.hub !== undefined) p.hub_access = !!patch.hub;
   await updateRow('print_staff', String(id || ''), p);
@@ -931,6 +1029,22 @@ async function staffUpdate(id, patch) {
 
 async function staffRegenerate(id) {
   await updateRow('print_staff', String(id || ''), { link_key: newKey(), last_used_at: null });
+  return staffList();
+}
+
+// Forgot passcode: a new 6-digit passcode for the owner to pass on. Signs them out everywhere and stops old devices' alerts.
+async function staffResetPasscode(id) {
+  const n = crypto.getRandomValues(new Uint32Array(1))[0] % 1000000;
+  const passcode = String(n).padStart(6, '0');
+  const salt = uuid();
+  await updateRow('print_staff', String(id || ''), { pass_salt: salt, pass_hash: await hashPassword(passcode, salt), link_key: newKey() });
+  return { staff: await staffList(), passcode };
+}
+
+async function staffApprove(id, hub) {
+  const st = await getRow('print_staff', String(id || ''));
+  if (!st) fail('That request no longer exists.');
+  await updateRow('print_staff', st.id, { status: 'approved', hub_access: !!hub, is_active: true });
   return staffList();
 }
 
@@ -966,6 +1080,8 @@ async function printRoute(req, ctx) {
     case 'printStaffUpdate': needMaster(); return staffUpdate(req.id, req.patch || {});
     case 'printStaffRegenerate': needMaster(); return staffRegenerate(req.id);
     case 'printStaffDelete': needMaster(); await deleteRows('print_staff', [String(req.id || '')]); return staffList();
+    case 'printStaffApprove': needMaster(); return staffApprove(req.id, req.hub);
+    case 'printStaffResetPasscode': needMaster(); return staffResetPasscode(req.id);
     case 'printPushSubscribe': return pushSubscribe(actor, req.subscription || {}, req.device);
     case 'printPushUnsubscribe': await DB.prepare('DELETE FROM push_subs WHERE endpoint = ?').bind(String(req.endpoint || '')).run(); return true;
     case 'printPushTest': return pushTest(req.endpoint);
@@ -987,14 +1103,14 @@ async function afterNewOrder(created) {
 async function printMe(actor) {
   const s = await printSettings();
   const role = actor.role;
-  const out = { role, name: actor.who, questions: await printQuestions(), botLinked: !!s.webhookUrl, readyMessage: s.readyMessage,
+  const out = { role, name: actor.who, via: actor.via || 'key', hub: !!actor.hub, passcode: !!actor.passcode, questions: await printQuestions(), botLinked: !!s.webhookUrl, readyMessage: s.readyMessage,
                 newOrderMessage: s.newOrderMessage, notifyOnDone: s.notifyOnDone, hubLinks: true,
                 pushKey: (await vapid()).publicKey,
                 storage: await storageInfo() };
   if (role === 'master') {
     out.staff = await staffList();
     out.devices = await pushDevices();
-    out.settings = { masterKey: s.masterKey, orderKey: s.orderKey, orderActive: s.orderActive,
+    out.settings = { masterKey: s.masterKey, orderKey: s.orderKey, orderActive: s.orderActive, joinKey: s.joinKey, joinActive: s.joinActive,
                      webhookUrl: s.webhookUrl, webhookSecret: s.webhookSecret, readyMessage: s.readyMessage,
                      newOrderMessage: s.newOrderMessage, notifyOnNew: s.notifyOnNew, notifyOnDone: s.notifyOnDone };
   }
@@ -1128,7 +1244,7 @@ async function printSaveSettings(input) {
 
 async function printRegenerate(which) {
   const s = await printSettings();
-  const field = { order: 'orderKey', master: 'masterKey' }[which];
+  const field = { order: 'orderKey', master: 'masterKey', join: 'joinKey' }[which];
   if (!field) fail(which === 'admin' ? 'Admin links are per person now — use Staff links.' : 'Unknown link.');
   s[field] = newKey();
   await savePrintSettings(s);
@@ -1137,7 +1253,7 @@ async function printRegenerate(which) {
 
 async function printSetActive(which, active) {
   const s = await printSettings();
-  const field = { order: 'orderActive' }[which];
+  const field = { order: 'orderActive', join: 'joinActive' }[which];
   if (!field) fail("That link can't be turned off.");
   s[field] = active;
   await savePrintSettings(s);
@@ -1352,6 +1468,11 @@ async function allowedSubs() {
   }
   if (stale.length) await deleteRows('push_subs', stale.map((x) => x.id));
   return out;
+}
+
+async function pushOwners(data) {
+  const subs = (await allowedSubs()).filter((x) => x.access === 'master' || x.access === 'team');
+  await Promise.all(subs.map((sub) => sendPush(sub, data)));
 }
 
 async function pushNewOrder(o) {

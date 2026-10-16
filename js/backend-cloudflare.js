@@ -119,12 +119,27 @@ export function createCloudflareBackend(cfg, { portal = false } = {}) {
         const r = await call('linkLogin', { linkKey });
         token = r.token; saveToken(token); user = r.user; emit();
       },
+      // The team signs in with their name + 6-digit passcode (owners use email + password).
+      async signInWithPasscode(name, passcode) {
+        const r = await call('passcodeLogin', { name, passcode });
+        token = r.token; saveToken(token); user = r.user; emit();
+      },
+      async changePasscode(passcode) {
+        const r = await call('changePasscode', { passcode });
+        token = r.token; saveToken(token);
+      },
       async signOut() { token = null; saveToken(null); user = null; emit(); },
       async changePassword(password) {
         const r = await call('changePassword', { password });
         token = r.token; saveToken(token);
       },
       async isTeam() { return !!user; },
+    },
+
+    // Join page: new people ask to join with a name + passcode, and the owner approves them.
+    join: {
+      info(joinKey) { return call('joinInfo', { joinKey }); },
+      request(joinKey, name, passcode) { return call('joinRequest', { joinKey, name, passcode }); },
     },
 
     async loadAll() { return call('bootstrap'); },
@@ -176,6 +191,8 @@ export function createCloudflareBackend(cfg, { portal = false } = {}) {
       staffUpdate(printKey, id, patch) { return call('printStaffUpdate', { printKey, id, patch }); },
       staffRegenerate(printKey, id) { return call('printStaffRegenerate', { printKey, id }); },
       staffDelete(printKey, id) { return call('printStaffDelete', { printKey, id }); },
+      staffApprove(printKey, id, hub) { return call('printStaffApprove', { printKey, id, hub }); },
+      staffResetPasscode(printKey, id) { return call('printStaffResetPasscode', { printKey, id }); },
       // Push notifications: new-order alerts on this device, even when the app is closed.
       pushSubscribe(printKey, subscription, device) { return call('printPushSubscribe', { printKey, subscription, device }); },
       pushRemove(printKey, id) { return call('printPushRemove', { printKey, id }); },

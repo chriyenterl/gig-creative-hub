@@ -8,7 +8,7 @@ import { fmtDate, timeAgo, copyText, parseHash, hrefFor, go, fmtBytes } from '..
 import { Icon, PageHead, Field, Empty, Pill, Tabs, MultiChips, DialogHost, ToastHost, TooltipHost, InstallButton, InstallHelpHost, StorageWarning, isInstalledApp, PasscodeInput, confirmDialog, toast, toastError } from '../ui.js';
 import {
   ORDER_STATUS, STATUS_ORDER, QUESTION_TYPES, QUESTION_ROLES, hasOptions, newQuestionId, answerText, isOverdue, dueLabel,
-  fillMessage, notifyPayload, SAMPLE_ORDER, MESSAGE_TAGS, useFileLinks, waLink, teamMessage,
+  fillMessage, notifyPayload, SAMPLE_ORDER, MESSAGE_TAGS, useFileLinks, waLink, teamMessage, QuestionField, isVisible,
 } from './shared.js';
 const CC = CONFIG.WHATSAPP_COUNTRY_CODE || '60';
 
@@ -226,6 +226,7 @@ function Overview() {
   ];
   return html`
     <${PageHead} title="Print orders" sub="Every order customers place through your order link lands here as New.">
+      ${api.print.addOrder && html`<a class="btn btn-primary" href=${hrefFor('new')}><${Icon} name="plus" size=${16} />New order</a>`}
       ${settings && html`<button class="btn" onClick=${async () => { await copyText(linkFor('order', settings.orderKey)); toast('Customer order link copied.'); }}>
         <${Icon} name="link" size=${16} />Copy customer order link</button>`}
       <button class="btn btn-ghost" onClick=${() => refreshOrders().then(() => toast('Up to date.')).catch(toastError)}><${Icon} name="refresh" size=${16} />Refresh</button>
@@ -263,6 +264,7 @@ function OrderList({ status, query }) {
   const set = (patch) => go('orders/' + status, { ...query, ...patch }, { replace: true });
   return html`
     <${PageHead} title=${ORDER_STATUS[status].label + ' orders'} sub=${ORDER_STATUS[status].hint}>
+      ${api.print.addOrder && html`<a class="btn btn-primary" href=${hrefFor('new')}><${Icon} name="plus" size=${16} />New order</a>`}
       <button class="btn btn-ghost" onClick=${() => refreshOrders().catch(toastError)}><${Icon} name="refresh" size=${16} />Refresh</button>
     <//>
     <${Tabs} value=${status} onChange=${(s) => go('orders/' + s)} items=${STATUS_ORDER.map((s) => ({ id: s, label: ORDER_STATUS[s].label, count: orders.filter((o) => o.status === s).length }))} />
@@ -406,7 +408,7 @@ function OrderDetail({ id }) {
               : h.event === 'whatsapp' ? `WhatsApp opened — “${h.kind === 'created' ? 'order received' : 'ready for pickup'}” message`
               : h.event === 'notify'
               ? (h.kind === 'created' ? (h.ok ? 'Bot told about the new order' : 'Bot not reached (new order)') : h.ok ? 'Bot told the order is ready' : 'Bot not reached (order ready)')
-              : h.status === 'new' ? 'Order placed' : 'Moved to ' + ORDER_STATUS[h.status]?.label}</b>
+              : h.status === 'new' ? (h.added ? 'Order added' : 'Order placed') : 'Moved to ' + ORDER_STATUS[h.status]?.label}</b>
             <span class="muted small">${fmtDate(h.at)} ${new Date(h.at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}${h.by ? ' · by ' + h.by : ''}</span>
             ${h.detail && html`<span class="small">${h.detail}</span>`}
           </li>`)}</ol>
@@ -648,6 +650,86 @@ function Access() {
     <${AlertsCard} />`;
 }
 
+// Staff add an order themselves — for walk-in, phone or WhatsApp customers. Same questions as the customer form,
+// but only the customer's name or phone is required.
+function NewOrder() {
+  const { questions, botLinked } = usePrint();
+  const [answers, setAnswers] = useState({});
+  const [files, setFiles] = useState({});
+  const [status, setStatus] = useState('new');
+  const [notes, setNotes] = useState('');
+  const [notifyBot, setNotifyBot] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const visible = questions.filter((q) => isVisible(q, answers, questions));
+  const setAnswer = (id, v) => setAnswers((a) => ({ ...a, [id]: v }));
+  const patchFile = (qid, key, p) => setFiles((f) => ({ ...f, [qid]: f[qid].map((x) => (x.key === key ? { ...x, ...p } : x)) }));
+  const addFiles = (qid, list, replace = false) => {
+    const items = list.map((file) => ({ key: Math.random().toString(36).slice(2), file, state: 'ready', progress: 0 }));
+    setFiles((f) => ({ ...f, [qid]: replace ? items : [...(f[qid] || []), ...items] }));
+  };
+  const who = questions.filter((q) => q.role === 'name' || q.role === 'phone' || q.role === 'company');
+
+  const save = async (e) => {
+    e.preventDefault();
+    if (!who.some((q) => String(answers[q.id] || '').trim())) return toast("Add at least the customer's name or phone number.", 'error');
+    setBusy(true);
+    try {
+      const shown = new Set(visible.map((q) => q.id));
+      const filesOut = {};
+      for (const [qid, list] of Object.entries(files).filter(([qid]) => shown.has(qid))) {
+        filesOut[qid] = [];
+        for (const it of list) {
+          let up = it.uploaded;
+          if (!up) {
+            patchFile(qid, it.key, { state: 'uploading', progress: 0, error: null });
+            try {
+              up = await api.print.staffUploadFile(getKey(), it.file, { onProgress: (p) => patchFile(qid, it.key, { progress: p }) });
+              patchFile(qid, it.key, { state: 'done', progress: 1, uploaded: up });
+            } catch (err) {
+              patchFile(qid, it.key, { state: 'error', error: err.message });
+              throw new Error(`“${it.file.name}” didn't upload: ${err.message}`);
+            }
+          }
+          filesOut[qid].push(up);
+        }
+      }
+      const answersOut = Object.fromEntries(Object.entries(answers).filter(([qid]) => shown.has(qid)));
+      const o = await api.print.addOrder(getKey(), answersOut, filesOut, { status, notes: notes.trim() || null, notifyBot: botLinked && notifyBot });
+      setP({ orders: [o, ...P.orders.filter((x) => x.id !== o.id)].sort(byNewest) });
+      toast(`Order ${o.order_no} added.`);
+      go('order/' + o.id, {}, { replace: true });
+    } catch (err) { toastError(err); setBusy(false); }
+  };
+
+  return html`
+    <${PageHead} title="New order" sub="For walk-in, phone or WhatsApp customers. Fill in what you know — only the customer's name or phone is required." back=${{ href: hrefFor(''), label: 'Overview' }} />
+    <form class="new-order" onSubmit=${save} novalidate>
+      <section class="card order-form">
+        ${visible.map((q) => html`<${QuestionField} key=${q.id} q=${{ ...q, required: false, label: q.label.replace(/^Your\b/i, "Customer's") }} value=${answers[q.id]} busy=${busy}
+          onChange=${(v) => setAnswer(q.id, v)} files=${files[q.id]} onFiles=${(list, replace) => addFiles(q.id, list, replace)}
+          onRemoveFile=${(key) => setFiles((f) => ({ ...f, [q.id]: f[q.id].filter((x) => x.key !== key) }))} />`)}
+      </section>
+      <section class="card">
+        <header class="card-head"><h2>For the team</h2></header>
+        <div class="form-grid">
+          <${Field} label="Start as">
+            <select value=${status} onChange=${(e) => setStatus(e.target.value)}>
+              <option value="new">New — not started yet</option>
+              <option value="pending">Pending — already in production</option>
+            </select><//>
+          <${Field} label="Internal notes" hint="Only your team sees these" wide>
+            <textarea rows="3" value=${notes} placeholder="e.g. Paid deposit RM50, customer will WhatsApp the artwork" onInput=${(e) => setNotes(e.target.value)}></textarea><//>
+        </div>
+        ${botLinked && html`<label class="switch-row"><span class="switch"><input type="checkbox" checked=${notifyBot} onChange=${(e) => setNotifyBot(e.target.checked)} /><span></span></span>
+          <span>Send the customer the “order received” message through your bot</span></label>`}
+        <div class="page-actions">
+          <button class="btn btn-primary btn-lg" disabled=${busy}><${Icon} name=${busy ? 'upload' : 'check'} size=${18} />${busy ? 'Saving…' : 'Add order'}</button>
+          <a class="btn btn-ghost" href=${hrefFor('')}>Cancel</a>
+        </div>
+      </section>
+    </form>`;
+}
+
 // The team: people join with the join link (name + 6-digit passcode) and the owner approves them here.
 const teamLinkUrl = (s) => (s.hub ? new URL('../index.html#k=' + s.key, location.href.split('#')[0]).href : linkFor('admin', s.key));
 const ACCESS = { print: 'Print Hub only', both: 'Print Hub + Creative Hub' };
@@ -849,6 +931,7 @@ function Shell() {
   let page;
   if (p0 === 'orders' && ORDER_STATUS[p1]) page = html`<${OrderList} status=${p1} query=${route.query} />`;
   else if (p0 === 'order' && p1) page = html`<${OrderDetail} id=${p1} />`;
+  else if (p0 === 'new') page = html`<${NewOrder} />`;
   else if (p0 === 'form' && master) page = html`<${FormEditor} />`;
   else if (p0 === 'access' && master) page = html`<${Access} />`;
   else page = html`<${Overview} />`;

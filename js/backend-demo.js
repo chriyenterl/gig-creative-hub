@@ -486,6 +486,40 @@ export function createDemoBackend() {
       const orderOk = (k) => pload().settings.orderActive && k === pload().settings.orderKey;
       const settingsOut = () => { const { nextNo, wa, teamEmails, teamEmailOn, siteUrl, ...rest } = pload().settings; return rest; };
       const find = (id) => { const o = pload().orders.find((x) => x.id === id); if (!o) throw new Error('That order no longer exists.'); return o; };
+      // Builds and saves an order (customers: every required answer; staff: just the customer's name or phone).
+      async function makeOrder(answersIn, filesIn, { strict, by, status = 'new', notes = null, bot = true }) {
+        const d = pload();
+        const roleCol = { name: 'customer_name', company: 'company', email: 'email', phone: 'phone', item: 'summary', quantity: 'quantity', deadline: 'due_date' };
+        const row = {};
+        const answers = d.questions.map((q) => {
+          if (!isVisible(q, answersIn, d.questions)) return { id: q.id, label: q.label, type: q.type, value: null, hidden: true };
+          if (q.type === 'voice_text') {
+            const text = String(answersIn[q.id] || '').trim();
+            const vf = filesIn[q.id] || [];
+            if (strict && q.required && !text && !vf.length) throw new Error('Please answer: ' + q.label);
+            return { id: q.id, label: q.label, type: q.type, value: text || vf.length ? { text: text || null, files: vf } : null };
+          }
+          let v = q.type === 'file' ? filesIn[q.id] || [] : answersIn[q.id];
+          if (typeof v === 'string') v = v.trim();
+          const empty = v == null || v === '' || (Array.isArray(v) && !v.length);
+          if (strict && q.required && empty) throw new Error('Please answer: ' + q.label);
+          if (strict && q.type === 'date' && !empty && String(v) < new Date(Date.now() - 86400e3).toISOString().slice(0, 10)) throw new Error('Please choose today or a future date for: ' + q.label);
+          if (q.role && roleCol[q.role] && !empty) row[roleCol[q.role]] = Array.isArray(v) ? v.join(', ') : String(v);
+          return { id: q.id, label: q.label, type: q.type, value: empty ? null : v };
+        });
+        if (!strict && !row.customer_name && !row.phone && !row.company) throw new Error("Add at least the customer's name or phone number.");
+        const now = new Date().toISOString();
+        const st = ['new', 'pending', 'completed'].includes(status) ? status : 'new';
+        const history = [{ status: 'new', at: now, by, ...(strict ? {} : { added: true }) }];
+        if (st !== 'new') history.push({ status: st, at: now, by });
+        const order = { id: uid(), order_no: 'P-' + d.settings.nextNo, status: st, customer_name: null, company: null, phone: null, email: null,
+          summary: null, quantity: null, due_date: null, ...row, answers, history, internal_notes: notes || null, created_at: now, updated_at: now };
+        d.settings.nextNo += 1;
+        d.orders.unshift(order);
+        if (bot && d.settings.webhookUrl && d.settings.notifyOnNew) order.history.push(await notify('created', order, false));
+        psave();
+        return order;
+      }
       async function notify(kind, o, test) {
         const st = pload().settings;
         const at = new Date().toISOString();
@@ -510,35 +544,25 @@ export function createDemoBackend() {
         async submit(orderKey, answersIn = {}, filesIn = {}) {
           await wait();
           if (!orderOk(orderKey)) throw new Error('This order link is no longer active. Please contact us.');
-          const d = pload();
-          const roleCol = { name: 'customer_name', company: 'company', email: 'email', phone: 'phone', item: 'summary', quantity: 'quantity', deadline: 'due_date' };
-          const row = {};
-          const answers = d.questions.map((q) => {
-            if (!isVisible(q, answersIn, d.questions)) return { id: q.id, label: q.label, type: q.type, value: null, hidden: true };
-            if (q.type === 'voice_text') {
-              const text = String(answersIn[q.id] || '').trim();
-              const vf = filesIn[q.id] || [];
-              if (q.required && !text && !vf.length) throw new Error('Please answer: ' + q.label);
-              return { id: q.id, label: q.label, type: q.type, value: text || vf.length ? { text: text || null, files: vf } : null };
-            }
-            let v = q.type === 'file' ? filesIn[q.id] || [] : answersIn[q.id];
-            if (typeof v === 'string') v = v.trim();
-            const empty = v == null || v === '' || (Array.isArray(v) && !v.length);
-            if (q.required && empty) throw new Error('Please answer: ' + q.label);
-            if (q.type === 'date' && !empty && String(v) < new Date(Date.now() - 86400e3).toISOString().slice(0, 10)) throw new Error('Please choose today or a future date for: ' + q.label);
-            if (q.role && roleCol[q.role] && !empty) row[roleCol[q.role]] = Array.isArray(v) ? v.join(', ') : String(v);
-            return { id: q.id, label: q.label, type: q.type, value: empty ? null : v };
-          });
-          const now = new Date().toISOString();
-          const order = { id: uid(), order_no: 'P-' + d.settings.nextNo, status: 'new', customer_name: null, company: null, phone: null, email: null,
-            summary: null, quantity: null, due_date: null, ...row, answers, history: [{ status: 'new', at: now, by: 'customer' }],
-            internal_notes: null, created_at: now, updated_at: now };
-          d.settings.nextNo += 1;
-          d.orders.unshift(order);
-          if (d.settings.webhookUrl && d.settings.notifyOnNew) order.history.push(await notify('created', order, false));
-          psave();
+          const order = await makeOrder(answersIn, filesIn, { strict: true, by: 'customer' });
           return { order_no: order.order_no };
         },
+        // Staff adding an order (walk-in / phone / WhatsApp): only the customer's name or phone is needed.
+        async addOrder(key, answersIn = {}, filesIn = {}, { status = 'new', notes = null, notifyBot = true } = {}) {
+          await wait();
+          const a = actor(key);
+          return clone(await makeOrder(answersIn, filesIn, { strict: false, by: a.who, status, notes, bot: notifyBot }));
+        },
+        async staffUploadFile(key, file, { onProgress } = {}) {
+          actor(key);
+          checkSpace(file.size, 'team');
+          const path = `print/${uid()}-${file.name}`;
+          for (let p = 0; p <= 1; p += 0.25) { onProgress?.(p); await wait(80); }
+          await idb.put(path, file);
+          onProgress?.(1);
+          return { id: path, name: file.name, size: file.size, mime: file.type || null };
+        },
+
         async me(key) {
           await wait();
           const a = actor(key);

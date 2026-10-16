@@ -182,6 +182,11 @@ number, email, phone, date, dropdown, buttons, checkboxes, file upload, or text-
 (customer name, company, phone, email, what they ordered, quantity, due date). Changes only affect new orders.
 Voice notes play right inside the order page (and are saved with the artwork).
 
+**Adding an order yourself** (walk-in, phone or WhatsApp customers): **New order** on the Overview or any order list. It's the
+same form customers fill in, but only the customer's name or phone is needed, you can attach their artwork, start it as **New**
+or **Pending**, add internal notes, and choose whether your bot sends them the “order received” message. Everyone else on the
+team gets the new-order alert (not the person who added it), and the history shows “Order added · by Ali”.
+
 **Messaging customers on WhatsApp (no bot needed):** every order has a green **WhatsApp** button — *“order received”* on
 new orders and *“ready for pickup”* on completed ones. It opens WhatsApp (phone or WhatsApp Web) with the customer's number and
 your message already typed; you just press Send. It's free and sent from your own WhatsApp. Each tap is noted in the order's

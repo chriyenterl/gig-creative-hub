@@ -1153,6 +1153,12 @@ async function printRoute(req, ctx) {
   switch (a) {
     case 'printMe': return printMe(actor);
     case 'printOrders': return readTable('print_orders');
+    case 'printStaffStartUpload': return startUpload('print/', req, 'team');
+    case 'printAddOrder': {
+      const created = await createOrder(req.answers, req.files, { strict: false, by: actor.who, status: req.status, notes: req.notes });
+      ctx.waitUntil(afterNewOrder(created, { except: actor, bot: req.notifyBot !== false }).catch((e) => console.error(e)));
+      return created;
+    }
     case 'printUpdate': return printUpdate(actor, req.id, req.patch || {});
     case 'printNotify': return printNotifyAgain(req.id, req.kind);
     case 'printDelete': needMaster(); return printDelete(req.id);
@@ -1175,10 +1181,10 @@ async function printRoute(req, ctx) {
   fail('Unknown action: ' + a);
 }
 
-async function afterNewOrder(created) {
+async function afterNewOrder(created, { except = null, bot = true } = {}) {
   const st = await printSettings();
-  await pushNewOrder(created);
-  if (!(st.webhookUrl && st.notifyOnNew)) return;
+  await pushNewOrder(created, except);
+  if (!(bot && st.webhookUrl && st.notifyOnNew)) return;
   const entry = await notify('created', created, false);
   const o = await getRow('print_orders', created.id);
   if (o) await updateRow('print_orders', o.id, { history: (o.history || []).concat([entry]) });
@@ -1207,7 +1213,13 @@ const earliestDate = () => new Date(Date.now() - 86400000).toISOString().slice(0
 async function printSubmit(req) {
   const s = await printSettings();
   if (!s.orderActive || !sameText(req.orderKey || '', s.orderKey)) fail('This order link is no longer active. Please contact us.');
-  const answersIn = req.answers || {}, filesIn = req.files || {};
+  return createOrder(req.answers, req.files, { strict: true, by: 'customer' });
+}
+
+// Builds and saves an order from form answers. Customers (strict) must answer every required question;
+// staff adding an order for a walk-in or phone customer only need the customer's name or phone.
+async function createOrder(answersIn, filesIn, { strict, by, status = 'new', notes = null }) {
+  answersIn = answersIn || {}; filesIn = filesIn || {};
   const roleCol = { name: 'customer_name', company: 'company', email: 'email', phone: 'phone', item: 'summary', quantity: 'quantity', deadline: 'due_date' };
   const row = {}, answers = [];
   const cleanFiles = async (list) => {
@@ -1225,26 +1237,29 @@ async function printSubmit(req) {
     if (q.type === 'voice_text') {
       const text = String(answersIn[q.id] || '').trim().slice(0, 5000);
       const voice = await cleanFiles(filesIn[q.id]);
-      if (q.required && !text && !voice.length) fail('Please answer: ' + q.label);
+      if (strict && q.required && !text && !voice.length) fail('Please answer: ' + q.label);
       answers.push({ id: q.id, label: q.label, type: q.type, value: (text || voice.length) ? { text: text || null, files: voice } : null });
       continue;
     }
     let v = q.type === 'file' ? (filesIn[q.id] || []) : answersIn[q.id];
     if (typeof v === 'string') v = v.trim().slice(0, 5000);
     const empty = v === undefined || v === null || v === '' || (Array.isArray(v) && !v.length);
-    if (q.required && empty) fail('Please answer: ' + q.label);
-    if (q.type === 'date' && !empty && String(v) < earliestDate()) fail('Please choose today or a future date for: ' + q.label);
+    if (strict && q.required && empty) fail('Please answer: ' + q.label);
+    if (strict && q.type === 'date' && !empty && String(v) < earliestDate()) fail('Please choose today or a future date for: ' + q.label);
     if (q.type === 'file' && !empty) v = await cleanFiles(v);
     answers.push({ id: q.id, label: q.label, type: q.type, value: empty ? null : v });
     if (q.role && roleCol[q.role] && !empty) row[roleCol[q.role]] = Array.isArray(v) ? v.join(', ') : String(v);
   }
+  if (!strict && !row.customer_name && !row.phone && !row.company) fail("Add at least the customer's name or phone number.");
   // Order numbers count up from 1001 — done in one statement so two orders never get the same number.
   const n = await DB.prepare(`INSERT INTO settings (key, value) VALUES ('PRINT_NEXT_NO', '1001')
     ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1 RETURNING value`).first();
   row.order_no = 'P-' + n.value;
-  row.status = 'new';
+  row.status = PRINT_STATUSES.includes(status) ? status : 'new';
   row.answers = answers;
-  row.history = [{ status: 'new', at: nowIso(), by: 'customer' }];
+  row.history = [{ status: 'new', at: nowIso(), by, ...(strict ? {} : { added: true }) }];
+  if (row.status !== 'new') row.history.push({ status: row.status, at: nowIso(), by });
+  if (notes) row.internal_notes = String(notes).slice(0, 20000);
   return insertRow('print_orders', row);
 }
 
@@ -1559,8 +1574,9 @@ async function pushOwners(data) {
   await Promise.all(subs.map((sub) => sendPush(sub, data)));
 }
 
-async function pushNewOrder(o) {
-  const subs = await allowedSubs();
+async function pushNewOrder(o, except = null) {
+  // Everyone's devices — except the person who added the order themselves.
+  const subs = (await allowedSubs()).filter((sub) => !except || !(sub.access === except.access && (sub.ref || null) === (except.ref || null)));
   if (!subs.length) return;
   const who = (o.customer_name || 'A customer') + (o.company ? ` (${o.company})` : '');
   const what = [o.summary, o.quantity ? '× ' + o.quantity : ''].filter(Boolean).join(' ');

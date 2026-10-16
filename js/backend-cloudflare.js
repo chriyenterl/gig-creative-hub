@@ -186,6 +186,12 @@ export function createCloudflareBackend(cfg, { portal = false } = {}) {
         return { id, name: file.name, size: file.size, mime: file.type || null };
       },
       submit(orderKey, answers, files) { return call('printSubmit', { orderKey, answers, files }); },
+      // Staff adding an order themselves (walk-in, phone, WhatsApp).
+      addOrder(printKey, answers, files, { status, notes, notifyBot } = {}) { return call('printAddOrder', { printKey, answers, files, status, notes, notifyBot }); },
+      async staffUploadFile(printKey, file, { onProgress } = {}) {
+        const id = await sendFile('printStaffStartUpload', { printKey }, file, onProgress);
+        return { id, name: file.name, size: file.size, mime: file.type || null };
+      },
       me(printKey) { return call('printMe', { printKey }); },
       orders(printKey) { return call('printOrders', { printKey }); },
       update(printKey, id, patch) { return call('printUpdate', { printKey, id, patch }); },

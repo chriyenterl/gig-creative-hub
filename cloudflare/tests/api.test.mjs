@@ -81,6 +81,22 @@ const asset = await data('insert', { token: T, table: 'assets', row: { title: 'S
 ok(asset.storage_path === k2 && asset.status === 'pending', 'asset row saved');
 ok((await api('insert', { token: T, table: 'assets', row: { title: 'x', storage_path: 'brand/nope/x.png' } })).ok === false, 'asset with a missing file is refused');
 ok((await api('insert', { token: T, table: 'assets', row: { title: 'x', storage_path: 'print/abc/x.png' } })).ok === false, 'asset pointing outside the library is refused');
+console.log('Video cover photo & caption');
+const coverImg = rand(40 * 1024);
+const cv = await upload('startUpload', { token: T, category: 'raw' }, coverImg, 'image/jpeg', 'cover.jpg');
+const vid2 = await upload('startUpload', { token: T, category: 'raw' }, rand(80 * 1024), 'video/mp4', 'clip.mp4');
+const withCover = await data('insert', { token: T, table: 'assets', row: { title: 'Clip', category: 'raw', media_type: 'video', storage_path: vid2, cover_path: cv, caption: '  New drop 🎉  ' } });
+ok(withCover.cover_path === cv && withCover.caption === 'New drop 🎉', 'video saved with its cover photo and caption', withCover);
+ok((await api('insert', { token: T, table: 'assets', row: { title: 'x', storage_path: vid2, cover_path: k2 } })).ok === false, 'a cover must be a photo');
+ok((await api('insert', { token: T, table: 'assets', row: { title: 'x', storage_path: vid2, cover_path: 'raw/nope/x.jpg' } })).ok === false, "a cover that didn't upload is refused");
+let edited = await data('update', { token: T, table: 'assets', id: withCover.id, patch: { caption: 'Edited in review' } });
+ok(edited.caption === 'Edited in review', 'caption can be edited later');
+edited = await data('update', { token: T, table: 'assets', id: withCover.id, patch: { cover_path: null } });
+ok(edited.cover_path === null, 'cover can be removed');
+ok((await api('update', { token: T, table: 'assets', id: withCover.id, patch: { cover_path: 'print/x/y.jpg' } })).ok === false, "cover can't point at print artwork");
+edited = await data('update', { token: T, table: 'assets', id: withCover.id, patch: { cover_path: cv } });
+ok(edited.cover_path === cv, 'and added back');
+
 const use = await data('insert', { token: T, table: 'asset_usage', row: { asset_id: asset.id, channel: 'instagram', used_on: '2026-10-01' } });
 ok(use.created_by === 'owner@example.com', 'usage logged with who');
 let a2 = (await data('list', { token: T, table: 'assets', eq: { id: asset.id } }))[0];
@@ -89,7 +105,7 @@ await data('remove', { token: T, table: 'asset_usage', id: use.id });
 a2 = (await data('list', { token: T, table: 'assets', eq: { id: asset.id } }))[0];
 ok(a2.use_count === 0 && a2.last_used_on === null, 'usage count re-synced after removal', a2);
 let st = await data('storage', { token: T });
-ok(st.used === small.length + big.length, 'storage counts both uploads', st);
+ok(st.used === small.length + big.length + coverImg.length + 80 * 1024, 'storage counts every upload', st);
 
 console.log('Creator upload links');
 const season = boot.seasons[0];
@@ -100,7 +116,12 @@ ok(info.talent_name === 'Aisha' && info.season_name === season.name, 'link info 
 const cfile = rand(2 * 1024 * 1024);
 const ck = await upload('linkStartUpload', { linkToken: link.token }, cfile, 'video/quicktime', 'raya clip.mov');
 ok(ck.startsWith('creators/Aisha-Raya-'), 'creator file goes in their own folder', ck);
-ok(typeof (await data('linkSubmit', { linkToken: link.token, fileId: ck, title: 'Raya clip', file_name: 'raya clip.mov' })) === 'string', 'creator submit creates an asset');
+const ccover = await upload('linkStartUpload', { linkToken: link.token }, rand(30 * 1024), 'image/jpeg', 'raya cover.jpg');
+ok((await api('linkSubmit', { linkToken: link.token, fileId: ck, title: 'Raya clip', coverId: cv })).ok === false, "creator can't use a cover from outside their folder");
+const subId = await data('linkSubmit', { linkToken: link.token, fileId: ck, title: 'Raya clip', file_name: 'raya clip.mov', coverId: ccover, caption: 'Selamat Hari Raya!' });
+ok(typeof subId === 'string', 'creator submit creates an asset');
+const subRow = (await data('list', { token: T, table: 'assets', eq: { id: subId } }))[0];
+ok(subRow.cover_path === ccover && subRow.caption === 'Selamat Hari Raya!', "creator's cover photo and caption are saved", subRow);
 ok((await api('linkSubmit', { linkToken: link.token, fileId: ck, title: 'again' })).ok === false, 'same file cannot be sent twice');
 ok((await api('linkSubmit', { linkToken: link.token, fileId: k1 })).ok === false, "creator can't claim a file outside their folder");
 const subs = await data('linkSubmissions', { linkToken: link.token });

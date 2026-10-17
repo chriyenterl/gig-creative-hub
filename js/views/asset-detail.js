@@ -1,8 +1,39 @@
 // Detail view for one item: preview, approval, info, usage history, download/share/delete.
 import { html, useState, useEffect } from '../lib.js';
-import { useStore, api, updateRow, deleteAssets, closeAsset, refreshAsset, talentById, getState } from '../store.js';
-import { ASSET_STATUS, CATEGORIES, MEDIA, CHANNELS, fmtBytes, fmtDate, timeAgo, parseTags, today, copyText, hrefFor } from '../util.js';
-import { Icon, Modal, MediaPreview, Field, SeasonSelect, TalentSelect, confirmDialog, toast, toastError, downloadAsset } from '../ui.js';
+import { useStore, api, updateRow, deleteAssets, closeAsset, refreshAsset, refreshStorage, talentById, getState } from '../store.js';
+import { ASSET_STATUS, CATEGORIES, MEDIA, CHANNELS, fmtBytes, fmtDate, timeAgo, parseTags, today, copyText, hrefFor, uid, safeName } from '../util.js';
+import { Icon, Modal, MediaPreview, Field, SeasonSelect, TalentSelect, CoverPicker, useSignedUrls, confirmDialog, toast, toastError, downloadAsset } from '../ui.js';
+
+// A video's cover photo: shown as its thumbnail in the library and before it plays.
+function CoverBox({ asset }) {
+  const [busy, setBusy] = useState(false);
+  const direct = asset.cover_path && api.media?.({ storage_path: asset.cover_path });
+  const urls = useSignedUrls(asset.cover_path && !direct ? [asset.cover_path] : []);
+  const src = direct ? direct.thumb : asset.cover_path ? urls[asset.cover_path] : null;
+  const pick = async (file) => {
+    setBusy(true);
+    try {
+      const path = `library/${asset.category}/${uid()}-cover-${safeName(file.name)}`;
+      const stored = await api.uploadFile(path, file, { category: asset.category }) || path;
+      const old = asset.cover_path;
+      try { await updateRow('assets', asset.id, { cover_path: stored }); } catch (e) { api.removeFiles([stored]).catch(() => {}); throw e; }
+      if (old) api.removeFiles([old]).catch(() => {});
+      refreshStorage();
+      toast('Cover photo saved.');
+    } catch (e) { toastError(e); }
+    setBusy(false);
+  };
+  const remove = async () => {
+    if (!(await confirmDialog({ title: 'Remove the cover photo?', message: 'The video will show its first frame instead.', confirmLabel: 'Remove' }))) return;
+    const old = asset.cover_path;
+    try { await updateRow('assets', asset.id, { cover_path: null }); api.removeFiles([old]).catch(() => {}); refreshStorage(); toast('Cover photo removed.'); } catch (e) { toastError(e); }
+  };
+  return html`<section class="side-section">
+    <h3>Cover photo</h3>
+    <p class="muted small">Shown as the video's thumbnail and before it plays.</p>
+    <${CoverPicker} src=${src} busy=${busy} onPick=${pick} onRemove=${asset.cover_path ? remove : null} />
+  </section>`;
+}
 
 function ApprovalBox({ asset }) {
   const [note, setNote] = useState(asset.review_note || '');
@@ -29,6 +60,7 @@ function InfoForm({ asset }) {
   const initial = {
     title: asset.title, description: asset.description || '', category: asset.category,
     season_id: asset.season_id || '', talent_id: asset.talent_id || '', tags: (asset.tags || []).join(', '),
+    caption: asset.caption || '',
   };
   const [d, setD] = useState(initial);
   const [busy, setBusy] = useState(false);
@@ -40,6 +72,7 @@ function InfoForm({ asset }) {
       await updateRow('assets', asset.id, {
         title: d.title.trim() || asset.title, description: d.description.trim() || null, category: d.category,
         season_id: d.season_id || null, talent_id: d.talent_id || null, tags: parseTags(d.tags),
+        caption: d.caption.trim() || null,
       });
       toast('Saved.');
     } catch (e) { toastError(e); }
@@ -55,6 +88,7 @@ function InfoForm({ asset }) {
       <${Field} label="Season"><${SeasonSelect} value=${d.season_id} onChange=${set('season_id')} /><//>
       <${Field} label="Talent" wide><${TalentSelect} value=${d.talent_id} onChange=${set('talent_id')} /><//>
       <${Field} label="Tags" wide hint="Comma separated"><input value=${d.tags} onInput=${set('tags')} /><//>
+      <${Field} label="Caption" wide hint="Optional — the text to post with it"><textarea rows="3" value=${d.caption} onInput=${set('caption')}></textarea><//>
       <${Field} label="Description / notes" wide><textarea rows="3" value=${d.description} onInput=${set('description')}></textarea><//>
     </div>
     ${dirty && html`<div class="row-end"><button class="btn" onClick=${() => setD(initial)}>Undo</button>
@@ -131,11 +165,13 @@ export function AssetDetail({ id }) {
           <dt>File</dt><dd class="break">${asset.file_name || '—'}</dd>
           <dt>Uploaded</dt><dd>${fmtDate(asset.created_at)} by ${asset.uploaded_by || '—'}</dd>
           <dt>Source</dt><dd>${asset.source === 'talent' ? 'Creator upload link' : 'Team upload'}</dd>
+          ${asset.caption && html`<dt>Caption</dt><dd class="caption-text">${asset.caption}</dd>`}
           ${talent && html`<dt>Talent</dt><dd><a class="link" href=${hrefFor('talents/' + talent.id)} onClick=${closeAsset}>${talent.name}</a></dd>`}
         </dl>
       </div>
       <div class="detail-side">
         <${ApprovalBox} key=${'a' + asset.id} asset=${asset} />
+        ${asset.media_type === 'video' && html`<${CoverBox} key=${'c' + asset.id} asset=${asset} />`}
         <${UsageBox} key=${'u' + asset.id} asset=${asset} />
         <${InfoForm} key=${'i' + asset.id} asset=${asset} />
       </div>

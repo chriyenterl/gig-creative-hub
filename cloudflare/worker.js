@@ -22,7 +22,7 @@
 const TOKEN_DAYS = 30;           // how long a team login lasts
 const PBKDF2_ROUNDS = 20000;     // password hashing strength (kept modest for the free plan's CPU limit)
 const CHUNK = 10 * 1024 * 1024;  // upload part size — big files are sent in pieces of this size
-const SCHEMA_V = '7';            // bump when SCHEMA changes so new columns get added
+const SCHEMA_V = '8';            // bump when SCHEMA changes so new columns get added
 const GB = 1e9;                  // storage is counted the way Cloudflare bills it (1 GB = 1,000,000,000 bytes)
 const DEFAULT_LIMIT_GB = 10;     // uploads stop here (R2's free allowance) — change it in Settings
 
@@ -39,7 +39,7 @@ const SCHEMA = {
                   num: ['upload_count'], bool: ['is_active'] },
   assets:       { cols: ['id', 'title', 'description', 'category', 'media_type', 'season_id', 'talent_id', 'upload_link_id',
                          'source', 'storage_path', 'file_name', 'mime_type', 'size_bytes', 'tags', 'status', 'review_note',
-                         'reviewed_at', 'use_count', 'last_used_on', 'uploaded_by', 'created_at', 'updated_at'],
+                         'reviewed_at', 'use_count', 'last_used_on', 'uploaded_by', 'cover_path', 'caption', 'created_at', 'updated_at'],
                   num: ['size_bytes', 'use_count'], arr: ['tags'] },
   asset_usage:  { cols: ['id', 'asset_id', 'channel', 'note', 'used_on', 'created_by', 'created_at'] },
   print_orders: { cols: ['id', 'order_no', 'status', 'customer_name', 'company', 'phone', 'email', 'summary', 'quantity',
@@ -387,8 +387,10 @@ async function apiInsert(t, row, me) {
   if (t === 'assets') {
     const key = String(row.storage_path || '');
     if (!key) fail('Missing file.');
-    if (!['final/', 'raw/', 'brand/'].some((p) => key.startsWith(p))) fail('That file is not in the GIG Creative Hub storage.');
+    if (!LIBRARY.some((p) => key.startsWith(p))) fail('That file is not in the GIG Creative Hub storage.');
     if (!(await FILES.head(key))) fail('We could not find the uploaded file. Please try again.');
+    if (row.cover_path) await checkCover(row.cover_path);
+    if (row.caption != null) row.caption = cleanCaption(row.caption);
   }
   if (t === 'upload_links') { row.token = newKey(); delete row.folder_id; }
   if (t === 'asset_usage' && !row.created_by) row.created_by = me.email || me.name;
@@ -412,7 +414,11 @@ async function apiUpdate(t, id, patch) {
     }
     return publicMember(await updateRow('team_members', id, p));
   }
-  if (t === 'assets') delete patch.storage_path;
+  if (t === 'assets') {
+    delete patch.storage_path;
+    if (patch.cover_path) await checkCover(patch.cover_path); // null removes the cover
+    if (patch.caption !== undefined) patch.caption = cleanCaption(patch.caption);
+  }
   if (t === 'upload_links') {
     delete patch.folder_id;
     if (patch.token !== undefined) patch.token = newKey(); // "Change link": the server makes the new code
@@ -931,6 +937,17 @@ async function checkSpace(size, who) {
   'STORAGE_FULL');
 }
 
+// Library files live under these folders; a video's cover photo must be an uploaded image in one of them.
+const LIBRARY = ['final/', 'raw/', 'brand/'];
+async function checkCover(key, folders = [...LIBRARY, 'creators/']) {
+  key = String(key || '');
+  if (!knownKey(key) || !folders.some((p) => key.startsWith(p))) fail("That cover photo isn't in the GIG Creative Hub storage.");
+  const head = await FILES.head(key);
+  if (!head) fail("The cover photo didn't finish uploading. Please add it again.");
+  if (!String(head.httpMetadata?.contentType || '').startsWith('image/')) fail('The cover must be a photo (JPG, PNG…).');
+}
+const cleanCaption = (c) => String(c || '').trim().slice(0, 5000) || null;
+
 function mediaTypeFor(mime) {
   mime = String(mime || '');
   if (mime.startsWith('image/')) return 'image';
@@ -983,13 +1000,14 @@ async function linkSubmit(req) {
   if (!file) fail('We could not find the uploaded file. Please try again.');
   const mime = (file.httpMetadata && file.httpMetadata.contentType) || req.mime_type || 'application/octet-stream';
   const fileName = req.file_name || (file.customMetadata && file.customMetadata.name) || key.split('/').pop();
+  if (req.coverId) await checkCover(req.coverId, [l.folder_id]);
   const asset = await insertRow('assets', {
     title: String(req.title || '').trim().slice(0, 300) || fileName,
     description: String(req.description || '').trim().slice(0, 5000) || null,
     category: 'final', media_type: mediaTypeFor(mime),
     season_id: l.season_id, talent_id: l.talent_id, upload_link_id: l.id, source: 'talent',
     storage_path: key, file_name: fileName, mime_type: mime, size_bytes: file.size,
-    status: 'pending', uploaded_by: l.label,
+    status: 'pending', uploaded_by: l.label, cover_path: req.coverId || null, caption: cleanCaption(req.caption),
   });
   await DB.prepare('UPDATE upload_links SET upload_count = COALESCE(upload_count, 0) + 1, last_upload_at = ? WHERE id = ?')
     .bind(nowIso(), l.id).run();

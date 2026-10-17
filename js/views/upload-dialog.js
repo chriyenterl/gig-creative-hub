@@ -2,7 +2,7 @@
 import { html, useState, useEffect } from '../lib.js';
 import { api, insertRow, getState, useStore, refreshStorage } from '../store.js';
 import { CATEGORIES, mediaTypeFor, safeName, stripExt, uid, parseTags, fmtBytes, MEDIA } from '../util.js';
-import { Icon, Modal, Dropzone, Progress, Field, SeasonSelect, TalentSelect, StorageWarning, toast } from '../ui.js';
+import { Icon, Modal, Dropzone, Progress, Field, SeasonSelect, TalentSelect, StorageWarning, CoverPicker, toast } from '../ui.js';
 
 export function UploadDialog({ onClose, defaults = {} }) {
   const [items, setItems] = useState([]); // { id, file, title, progress, state, error }
@@ -19,7 +19,7 @@ export function UploadDialog({ onClose, defaults = {} }) {
   const setM = (k) => (v) => setMeta((m) => ({ ...m, [k]: v?.target ? v.target.value : v }));
 
   const addFiles = (files) => setItems((xs) => [...xs, ...files.map((file) => ({
-    id: uid(), file, title: stripExt(file.name), progress: 0, state: 'ready', error: null,
+    id: uid(), file, title: stripExt(file.name), caption: '', cover: null, progress: 0, state: 'ready', error: null,
   }))]);
 
   const todo = items.filter((x) => x.state === 'ready' || x.state === 'error');
@@ -31,7 +31,12 @@ export function UploadDialog({ onClose, defaults = {} }) {
     for (const it of todo) {
       const path = `library/${meta.category}/${month}/${uid()}-${safeName(it.file.name)}`;
       patchItem(it.id, { state: 'uploading', progress: 0, error: null });
+      let cover = null; // a video's cover photo goes up first
       try {
+        if (it.cover && mediaTypeFor(it.file.type, it.file.name) === 'video') {
+          const coverPath = `library/${meta.category}/${month}/${uid()}-cover-${safeName(it.cover.name)}`;
+          cover = await api.uploadFile(coverPath, it.cover, { category: meta.category }) || coverPath;
+        }
         const stored = await api.uploadFile(path, it.file, { category: meta.category, onProgress: (p) => patchItem(it.id, { progress: p }) }) || path;
         try {
           await insertRow('assets', {
@@ -45,6 +50,8 @@ export function UploadDialog({ onClose, defaults = {} }) {
             file_name: it.file.name,
             mime_type: it.file.type || null,
             size_bytes: it.file.size,
+            cover_path: cover,
+            caption: it.caption.trim() || null,
             tags: parseTags(meta.tags),
             status: meta.status,
             reviewed_at: meta.status === 'approved' ? new Date().toISOString() : null,
@@ -56,6 +63,7 @@ export function UploadDialog({ onClose, defaults = {} }) {
         }
         patchItem(it.id, { state: 'done', progress: 1 });
       } catch (e) {
+        if (cover) api.removeFiles([cover]).catch(() => {});
         patchItem(it.id, { state: 'error', error: e.message });
         if (/storage is full/i.test(e.message)) break; // nothing else will fit either
       }
@@ -112,6 +120,10 @@ export function UploadDialog({ onClose, defaults = {} }) {
           <input class="file-title" value=${it.title} disabled=${it.state !== 'ready' && it.state !== 'error'}
             onInput=${(e) => patchItem(it.id, { title: e.target.value })} aria-label="Title" />
           <span class="muted small">${it.file.name} · ${fmtBytes(it.file.size)}</span>
+          <textarea class="file-caption" rows="2" value=${it.caption} disabled=${it.state !== 'ready' && it.state !== 'error'}
+            placeholder="Caption (optional) — e.g. the post text" aria-label="Caption" onInput=${(e) => patchItem(it.id, { caption: e.target.value })}></textarea>
+          ${mediaTypeFor(it.file.type, it.file.name) === 'video' && html`<${CoverPicker} file=${it.cover} disabled=${it.state !== 'ready' && it.state !== 'error'}
+            onPick=${(f) => patchItem(it.id, { cover: f })} onRemove=${() => patchItem(it.id, { cover: null })} />`}
           ${it.state === 'uploading' && html`<${Progress} value=${it.progress} />`}
           ${it.error && html`<span class="error-text small">${it.error}</span>`}
         </div>

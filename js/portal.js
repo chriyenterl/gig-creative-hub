@@ -4,7 +4,7 @@ import { html, render, useState, useEffect } from './lib.js';
 import { loadBackend } from './api.js';
 import { CONFIG } from '../config.js';
 import { uid, safeName, stripExt, fmtBytes, timeAgo, mediaTypeFor, MEDIA } from './util.js';
-import { Icon, Dropzone, Progress, ToastHost } from './ui.js';
+import { Icon, Dropzone, Progress, ToastHost, CoverPicker } from './ui.js';
 import { Brand } from './views/login.js';
 
 const api = await loadBackend({ portal: true });
@@ -40,7 +40,7 @@ function Portal() {
   const patch = (id, p) => setItems((xs) => xs.map((x) => (x.id === id ? { ...x, ...p } : x)));
   const addFiles = (files) => {
     setFinished(0);
-    setItems((xs) => [...xs, ...files.map((file) => ({ id: uid(), file, title: stripExt(file.name), note: '', progress: 0, state: 'ready', error: null }))]);
+    setItems((xs) => [...xs, ...files.map((file) => ({ id: uid(), file, title: stripExt(file.name), note: '', caption: '', cover: null, progress: 0, state: 'ready', error: null }))]);
   };
   const todo = items.filter((x) => x.state === 'ready' || x.state === 'error');
 
@@ -51,10 +51,15 @@ function Portal() {
       const path = `submissions/${token}/${uid()}-${safeName(it.file.name)}`;
       patch(it.id, { state: 'uploading', progress: 0, error: null });
       try {
+        let cover = null; // a video's cover photo goes up first
+        if (it.cover && mediaTypeFor(it.file.type, it.file.name) === 'video') {
+          const coverPath = `submissions/${token}/${uid()}-cover-${safeName(it.cover.name)}`;
+          cover = await api.uploadFile(coverPath, it.cover, { linkToken: token }) || coverPath;
+        }
         const stored = await api.uploadFile(path, it.file, { linkToken: token, onProgress: (p) => patch(it.id, { progress: p }) }) || path;
         await api.portal.submit(token, {
           path: stored, title: it.title, description: it.note, file_name: it.file.name,
-          mime_type: it.file.type || null, size_bytes: it.file.size,
+          mime_type: it.file.type || null, size_bytes: it.file.size, cover, caption: it.caption.trim() || null,
         });
         patch(it.id, { state: 'done', progress: 1 });
         ok++;
@@ -106,6 +111,10 @@ function Portal() {
                 onInput=${(e) => patch(it.id, { title: e.target.value })} />
               <input class="file-note" value=${it.note} disabled=${running} placeholder="Add a note for the team (optional)"
                 onInput=${(e) => patch(it.id, { note: e.target.value })} />
+              <textarea class="file-caption" rows="2" value=${it.caption} disabled=${running} placeholder="Caption (optional) — e.g. the post text"
+                aria-label="Caption" onInput=${(e) => patch(it.id, { caption: e.target.value })}></textarea>
+              ${mediaTypeFor(it.file.type, it.file.name) === 'video' && html`<${CoverPicker} file=${it.cover} disabled=${running}
+                onPick=${(f) => patch(it.id, { cover: f })} onRemove=${() => patch(it.id, { cover: null })} />`}
               <span class="muted small">${it.file.name} · ${fmtBytes(it.file.size)}</span>
               ${it.state === 'uploading' && html`<${Progress} value=${it.progress} />`}
               ${it.error && html`<span class="error-text small">${it.error}</span>`}

@@ -99,7 +99,7 @@ export async function deleteAndUnlink(table, id) {
 }
 
 export async function deleteAssets(assets) {
-  await api.removeFiles(assets.map((a) => a.storage_path));
+  await api.removeFiles(assets.flatMap((a) => [a.storage_path, a.cover_path]).filter(Boolean));
   await api.removeMany('assets', assets.map((a) => a.id));
   const gone = new Set(assets.map((a) => a.id));
   setState({ assets: state.assets.filter((a) => !gone.has(a.id)) });

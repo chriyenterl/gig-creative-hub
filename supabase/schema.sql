@@ -124,6 +124,9 @@ create table if not exists public.assets (
   created_at      timestamptz not null default now(),
   updated_at      timestamptz not null default now()
 );
+-- Library items: a video's cover photo and an optional caption.
+alter table public.assets add column if not exists cover_path text;
+alter table public.assets add column if not exists caption    text;
 
 create index if not exists assets_season_idx  on public.assets (season_id);
 create index if not exists assets_status_idx  on public.assets (status);

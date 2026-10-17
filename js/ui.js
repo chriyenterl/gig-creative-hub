@@ -198,11 +198,16 @@ export function MediaThumb({ asset, url }) {
   }, []);
   const kind = asset.media_type;
   const direct = api?.media?.(asset); // Google Drive: ready-made thumbnail links (videos included)
+  const coverDirect = asset.cover_path && api?.media?.({ storage_path: asset.cover_path });
+  const coverUrls = useSignedUrls(asset.cover_path && !coverDirect ? [asset.cover_path] : []);
+  const cover = coverDirect ? coverDirect.thumb : asset.cover_path ? coverUrls[asset.cover_path] : null;
   if (direct) url = direct.thumb;
   const show = url && seen && !broken;
   let inner;
-  // Images use the browser's own lazy loading; videos wait until scrolled into view (they're heavier).
-  if (url && !broken && (kind === 'image' || direct)) inner = html`<img src=${url} alt="" loading="lazy" decoding="async" onError=${() => setBroken(true)} />`;
+  // A video's cover photo is used as its thumbnail. Images use the browser's own lazy loading;
+  // videos without a cover wait until scrolled into view (they're heavier).
+  if (cover && !broken) inner = html`<img src=${cover} alt="" loading="lazy" decoding="async" onError=${() => setBroken(true)} />`;
+  else if (url && !broken && (kind === 'image' || direct)) inner = html`<img src=${url} alt="" loading="lazy" decoding="async" onError=${() => setBroken(true)} />`;
   else if (show && kind === 'video') inner = html`<video src=${url + '#t=0.5'} preload="metadata" muted playsinline onError=${() => setBroken(true)}></video>`;
   else inner = html`<div class="thumb-ph"><${Icon} name=${MEDIA[kind]?.icon || 'file'} size=${26} /><span>${extOf(asset)}</span></div>`;
   return html`<div class="thumb" ref=${ref}>
@@ -213,13 +218,14 @@ export function MediaThumb({ asset, url }) {
 
 export function MediaPreview({ asset }) {
   const direct = api?.media?.(asset);
-  const urls = useSignedUrls(direct ? [] : [asset.storage_path]);
+  const urls = useSignedUrls(direct ? [] : [asset.storage_path, asset.cover_path].filter(Boolean));
   const url = urls[asset.storage_path];
+  const poster = asset.cover_path ? urls[asset.cover_path] || undefined : undefined;
   const kind = asset.media_type;
   if (direct && kind === 'image') return html`<div class="preview"><img src=${direct.full} alt=${asset.title} /></div>`;
   if (direct) return html`<div class="preview"><iframe src=${direct.embed} title=${asset.title} allow="autoplay; fullscreen" allowfullscreen></iframe></div>`;
   if (url && kind === 'image') return html`<div class="preview"><img src=${url} alt=${asset.title} /></div>`;
-  if (url && kind === 'video') return html`<div class="preview"><video src=${url} controls playsinline preload="metadata"></video></div>`;
+  if (url && kind === 'video') return html`<div class="preview"><video src=${url} poster=${poster} controls playsinline preload="metadata"></video></div>`;
   if (url && kind === 'audio') return html`<div class="preview preview-pad"><audio src=${url} controls></audio></div>`;
   if (url && asset.mime_type === 'application/pdf') return html`<div class="preview"><iframe src=${url} title=${asset.title}></iframe></div>`;
   return html`<div class="preview preview-pad"><div class="thumb-ph big">
@@ -253,6 +259,26 @@ export function StorageWarning({ storage, settingsHref = '#/settings', print = f
     ? html`<b>Storage is full (${nums}).</b> New uploads are paused — including creator links and print order files. ${fix}`
     : html`<b>Storage is ${Math.round(ratio * 100)}% full (${nums}).</b> New uploads stop at ${fmtGB(storage.limit)}. ${fix}`;
   return html`<div class=${'storage-banner' + (full ? ' full' : '')} role="status"><${Icon} name="alert" size=${16} /><span>${text}</span></div>`;
+}
+
+// ── Cover photo for a video (choose / change / remove) ────────────────────
+export function CoverPicker({ file, src, onPick, onRemove, disabled, busy }) {
+  const input = useRef();
+  const [preview, setPreview] = useState(null);
+  useEffect(() => {
+    if (!file) return setPreview(null);
+    const u = URL.createObjectURL(file);
+    setPreview(u);
+    return () => URL.revokeObjectURL(u);
+  }, [file]);
+  const shown = preview || src;
+  return html`<div class="cover-picker">
+    <span class="cover-thumb">${shown ? html`<img src=${shown} alt="Cover photo" />` : html`<${Icon} name="image" size=${18} />`}</span>
+    <button type="button" class="btn btn-sm" disabled=${disabled || busy} onClick=${() => input.current.click()}>
+      <${Icon} name="image" size=${14} />${busy ? 'Uploading…' : shown ? 'Change cover photo' : 'Add cover photo'}</button>
+    ${shown && onRemove && html`<button type="button" class="btn btn-sm btn-ghost" disabled=${disabled || busy} onClick=${onRemove}>Remove</button>`}
+    <input ref=${input} type="file" accept="image/*" hidden onChange=${(e) => { const f = e.target.files[0]; e.target.value = ''; if (f) onPick(f); }} />
+  </div>`;
 }
 
 // ── 6-digit passcode box (team sign-in) ───────────────────────────────────

@@ -749,6 +749,7 @@ export function createDemoBackend() {
           category: 'final', media_type: kind, season_id: l.season_id, talent_id: l.talent_id, upload_link_id: l.id,
           source: 'talent', storage_path: m.path, file_name: m.file_name, mime_type: mime, size_bytes: m.size_bytes,
           status: 'pending', review_note: null, reviewed_at: null, uploaded_by: l.label,
+          cover_path: m.cover || null, caption: (m.caption || '').trim() || null,
         };
         db.assets.push(r);
         l.upload_count += 1;

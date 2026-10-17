@@ -223,7 +223,7 @@ export function createGoogleBackend(cfg, { portal = false } = {}) {
       submit(linkToken, m) {
         return call('linkSubmit', {
           linkToken, fileId: m.path, title: m.title, description: m.description,
-          file_name: m.file_name, mime_type: m.mime_type, size_bytes: m.size_bytes,
+          file_name: m.file_name, mime_type: m.mime_type, size_bytes: m.size_bytes, coverId: m.cover || null, caption: m.caption || null,
         });
       },
       submissions(linkToken) { return call('linkSubmissions', { linkToken }); },

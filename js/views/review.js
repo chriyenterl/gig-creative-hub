@@ -11,6 +11,11 @@ const DECISIONS = {
 
 function ReviewItem({ asset }) {
   const [note, setNote] = useState(asset.review_note || '');
+  const [caption, setCaption] = useState(asset.caption || '');
+  const saveCaption = () => {
+    if (caption.trim() === (asset.caption || '')) return;
+    updateRow('assets', asset.id, { caption: caption.trim() || null }).then(() => toast('Caption saved.')).catch(toastError);
+  };
   const [season, setSeason] = useState(asset.season_id || '');
   const [category, setCategory] = useState(asset.category);
   const [busy, setBusy] = useState(false);
@@ -20,7 +25,7 @@ function ReviewItem({ asset }) {
     setBusy(true);
     try {
       await updateRow('assets', asset.id, {
-        status, category, season_id: season || null,
+        status, category, season_id: season || null, caption: caption.trim() || null,
         review_note: note.trim() || null, reviewed_at: new Date().toISOString(),
       });
       toast(DECISIONS[status]);
@@ -46,6 +51,10 @@ function ReviewItem({ asset }) {
           </select>
         <//>
       </div>
+      <${Field} label="Caption (optional)" hint="The text to post with it — saved when you click away">
+        <textarea rows="3" value=${caption} placeholder="e.g. Unboxing our new holiday box 🎁 Link in bio!"
+          onInput=${(e) => setCaption(e.target.value)} onBlur=${saveCaption}></textarea>
+      <//>
       <${Field} label="Review note (team only)">
         <textarea rows="2" value=${note} placeholder="e.g. Logo needs to be visible in the first 3 seconds"
           onInput=${(e) => setNote(e.target.value)}></textarea>

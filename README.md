@@ -130,6 +130,11 @@ They only see an upload page. Their files land in **Review** (and in their own f
 In the app: Talents → **Import from Notion / CSV** → drop the `.csv` file. Columns are matched automatically (you can change any);
 handles are read from profile links, and talents already in the app are skipped. Works with Google Sheets / Excel CSVs too.
 
+**Captions & video covers** — every upload (team or creator link) has an optional **Caption** box for the text you'll post with it,
+and videos have **Add cover photo**: the cover is the video's thumbnail in the library and shows before it plays. Edit the caption
+later in **Review** (saved when you click away) or on the item's details; add, change or remove a video's cover on its details.
+Captions are searchable and included in **Export list**.
+
 **Approve content** — Review → Approve / Request changes / Reject.
 
 **Reuse content** — Library → filter e.g. *Approved* + *Not used yet* + a season → open an item → **Download**,

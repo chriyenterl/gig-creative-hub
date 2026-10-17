@@ -39,7 +39,7 @@ var SCHEMA = {
                   num: ['upload_count'], bool: ['is_active'] },
   assets:       { cols: ['id', 'title', 'description', 'category', 'media_type', 'season_id', 'talent_id', 'upload_link_id',
                          'source', 'storage_path', 'file_name', 'mime_type', 'size_bytes', 'tags', 'status', 'review_note',
-                         'reviewed_at', 'use_count', 'last_used_on', 'uploaded_by', 'created_at', 'updated_at'],
+                         'reviewed_at', 'use_count', 'last_used_on', 'uploaded_by', 'cover_path', 'caption', 'created_at', 'updated_at'],
                   num: ['size_bytes', 'use_count'], arr: ['tags'] },
   asset_usage:  { cols: ['id', 'asset_id', 'channel', 'note', 'used_on', 'created_by', 'created_at'] },
   print_orders: { cols: ['id', 'order_no', 'status', 'customer_name', 'company', 'phone', 'email', 'summary', 'quantity',
@@ -335,6 +335,7 @@ function apiInsert_(name, row, me) {
   if (name === 'assets') {
     if (!row.storage_path) fail_('Missing file.');
     shareFile_(row.storage_path, ['final', 'raw', 'brand'].map(function (k) { return folder_(k).getId(); }));
+    if (row.cover_path) shareFile_(row.cover_path, ['final', 'raw', 'brand'].map(function (k) { return folder_(k).getId(); }));
   }
   if (name === 'upload_links' && !row.token) row.token = Utilities.getUuid().replace(/-/g, '');
   if (name === 'asset_usage' && !row.created_by) row.created_by = me.email;
@@ -606,6 +607,7 @@ function linkSubmit_(req) {
   if (!l.folder_id) fail_('Invalid upload.');
   if (readTable_('assets').rows.some(function (a) { return a.storage_path === req.fileId; })) fail_('This file was already sent.');
   var file = shareFile_(req.fileId, [l.folder_id]);
+  if (req.coverId) shareFile_(req.coverId, [l.folder_id]);
   var mime = file.getMimeType() || req.mime_type || 'application/octet-stream';
   var asset = insertRow_('assets', {
     title: String(req.title || '').trim() || req.file_name || file.getName(),
@@ -614,6 +616,7 @@ function linkSubmit_(req) {
     season_id: l.season_id, talent_id: l.talent_id, upload_link_id: l.id, source: 'talent',
     storage_path: req.fileId, file_name: req.file_name || file.getName(), mime_type: mime, size_bytes: file.getSize(),
     status: 'pending', uploaded_by: l.label,
+    cover_path: req.coverId || null, caption: String(req.caption || '').trim().slice(0, 5000) || null,
   });
   updateRow_('upload_links', l.id, { upload_count: (Number(l.upload_count) || 0) + 1, last_upload_at: new Date().toISOString() });
   return asset.id;

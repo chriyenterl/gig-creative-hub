@@ -1,0 +1,52 @@
+// "Forgot passcode" by email: the Worker sends through a stand-in email service (RESEND_API_URL),
+// this script reads the email, follows the link and sets a new passcode. See run.sh.
+import http from 'node:http';
+const BASE = process.argv[2] || 'http://127.0.0.1:8787';
+let pass = 0, failN = 0;
+const ok = (c, label, extra) => { if (c) { pass++; console.log('  ✓', label); } else { failN++; console.log('  ✗', label, extra !== undefined ? JSON.stringify(extra).slice(0, 300) : ''); } };
+const api = async (action, args = {}) => (await fetch(BASE + '/api', { method: 'POST', body: JSON.stringify({ action, ...args }) })).json();
+const data = async (action, args) => { const j = await api(action, args); if (!j.ok) throw new Error(action + ': ' + j.error); return j.data; };
+const mails = [];
+const server = http.createServer((req, res) => { let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => { mails.push({ auth: req.headers.authorization, body: JSON.parse(b) }); res.end('{"id":"x"}'); }); });
+await new Promise((r) => server.listen(9912, '127.0.0.1', r));
+const wait = async (fn, ms = 5000) => { const t = Date.now(); while (Date.now() - t < ms) { const v = fn(); if (v) return v; await new Promise((r) => setTimeout(r, 100)); } return null; };
+
+await data('setupAdmin', { email: 'owner@example.test', name: 'Owner', password: 'mail-test-pass' });
+const T = (await data('login', { email: 'owner@example.test', password: 'mail-test-pass' })).token;
+const S = (await data('printMe', { token: T })).settings;
+ok((await data('status')).emailReset === true, 'email resets are on once a sender is connected');
+await data('joinRequest', { joinKey: S.joinKey, name: 'Nur', passcode: '111222', email: 'nur@example.test' });
+const NUR = (await data('printMe', { token: T })).staff.find((x) => x.name === 'Nur');
+await data('passcodeResetRequest', { email: 'nur@example.test' });
+await new Promise((r) => setTimeout(r, 500));
+ok(mails.length === 0, 'not approved yet: no reset email (but the same polite answer)');
+await data('printStaffApprove', { token: T, id: NUR.id, hub: false });
+const oldToken = (await data('passcodeLogin', { name: 'Nur', passcode: '111222' })).token;
+ok((await data('passcodeResetRequest', { email: '  NUR@example.test ' })).sent === true, 'Nur asks for a reset link — no owner needed');
+const m = await wait(() => mails[0]);
+ok(m && m.auth === 'Bearer test-key' && m.body.to[0] === 'nur@example.test' && m.body.from === 'GIG <noreply@example.test>', 'email sent to Nur from your address', m?.body);
+const link = (m?.body.text || '').match(/https?:\/\/\S+reset\.html#(\S+)/);
+ok(!!link && link[0].startsWith('https://chriyenterl.github.io/gig-creative-hub/reset.html#'), "email links to your website's reset page", link?.[0]);
+ok(/Choose a new passcode/.test(m?.body.html || ''), 'email has a button');
+ok((await data('passcodeResetRequest', { email: 'nobody@example.test' })).sent === true && mails.length === 1, "unknown email: same answer, nothing sent (doesn't reveal who's on the team)");
+ok((await api('passcodeResetConfirm', { token: link[1], passcode: '12' })).ok === false, 'new passcode must be 6 digits');
+const done = await data('passcodeResetConfirm', { token: link[1], passcode: '777888' });
+ok(done.user.name === 'Nur' && !!done.token, 'new passcode saved and Nur is signed in');
+ok((await api('me', { token: oldToken })).code === 'AUTH', 'her old sign-ins end');
+ok((await api('passcodeResetConfirm', { token: link[1], passcode: '999000' })).ok === false, 'the link only works once');
+ok(!!(await data('passcodeLogin', { name: 'Nur', passcode: '777888' })).token && (await api('passcodeLogin', { name: 'Nur', passcode: '111222' })).ok === false, 'new passcode works, old one not');
+await data('passcodeResetRequest', { email: 'nur@example.test' }); // 3rd request in 15 minutes
+const j4 = await api('passcodeResetRequest', { email: 'nur@example.test' });
+ok(j4.ok === false && /just sent/.test(j4.error), 'no flood of reset emails (3 per 15 minutes)', j4.error);
+const NT = (await data('passcodeLogin', { name: 'Nur', passcode: '777888' })).token;
+ok((await data('me', { token: NT })).resetEmail === 'nur@example.test', 'Nur can see her reset email');
+await data('changeMyEmail', { token: NT, email: 'nur.new@example.test' });
+ok((await data('me', { token: NT })).resetEmail === 'nur.new@example.test', 'and change it herself');
+await data('printStaffUpdate', { token: T, id: NUR.id, patch: { active: false } });
+const before = mails.length;
+await api('passcodeResetRequest', { email: 'nur.new@example.test' });
+await new Promise((r) => setTimeout(r, 500));
+ok(mails.length === before, 'turned off: no reset email');
+server.close();
+console.log(`\n${pass} passed, ${failN} failed`);
+process.exit(failN ? 1 : 0);

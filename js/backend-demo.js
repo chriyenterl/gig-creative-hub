@@ -246,7 +246,8 @@ function printSeed() {
     // One private admin link per staff member.
     staff: [
       // Demo only: passcodes are kept as plain text here (the real server stores them hashed).
-      { id: uid(), name: 'Production team', key: 'demoadminlink', active: true, hub: false, status: 'approved', pin: null, last_used_at: ago(2), created_at: ago(400) },
+      { id: uid(), name: 'Print Hub admin link', key: 'demoadminlink', active: true, hub: false, shared: true, status: 'approved', pin: null, last_used_at: ago(2), created_at: ago(400) },
+      { id: uid(), name: 'Creative Hub admin link', key: 'demohublink', active: true, hub: true, shared: true, status: 'approved', pin: null, last_used_at: null, created_at: ago(400) },
       { id: uid(), name: 'Ali', key: 'demoalilink', active: true, hub: true, status: 'approved', pin: '123456', last_used_at: null, created_at: ago(30) },
       { id: uid(), name: 'Siti', key: newToken(), active: true, hub: false, status: 'pending', pin: '654321', requested_at: ago(1), created_at: ago(1) },
     ],
@@ -328,6 +329,9 @@ export function createDemoBackend() {
         try { st = (JSON.parse(localStorage.getItem(PRINT_KEY))?.staff || []).find((x) => x.key === key && x.active); } catch {}
         if (!st) throw new Error('This team link is no longer valid. Please ask for a new one.');
         if (!st.hub) throw Object.assign(new Error('This link opens the Print Hub only.'), { code: 'PRINT_ONLY' });
+        let typed = '';
+        try { typed = (localStorage.getItem('gig-my-name') || '').trim(); } catch {}
+        if (st.shared && !typed) return { needsName: true };
       },
       // Team sign-in with name + 6-digit passcode (demo: checks it, then you carry on as the demo user).
       async signInWithPasscode(name, passcode) {
@@ -340,6 +344,7 @@ export function createDemoBackend() {
       },
       async changePasscode() {},
       async requestPasscodeReset() { throw new Error('Demo mode can\'t send emails — in the live app a reset link is emailed to them.'); },
+      saveMyName(n) { try { localStorage.setItem('gig-my-name', String(n).trim().slice(0, 40)); } catch {} },
       async signOut() {},
       async changePassword() {},
       async isTeam() { return true; },
@@ -452,6 +457,14 @@ export function createDemoBackend() {
               pdb = x;
               psave();
             }
+            if (!x.staff.some((st) => st.shared)) { // saved before the two shared admin links existed
+              const old = x.staff.find((st) => st.key === 'demoadminlink');
+              if (old) Object.assign(old, { name: 'Print Hub admin link', shared: true, hub: false });
+              else x.staff.push({ id: uid(), name: 'Print Hub admin link', key: 'demoadminlink', active: true, hub: false, shared: true, status: 'approved', created_at: new Date().toISOString() });
+              x.staff.push({ id: uid(), name: 'Creative Hub admin link', key: 'demohublink', active: true, hub: true, shared: true, status: 'approved', created_at: new Date().toISOString() });
+              pdb = x;
+              psave();
+            }
             if (!x.settings.joinKey) { // saved before joining with a passcode existed
               Object.assign(x.settings, { joinKey: 'demojoinlink', joinActive: true });
               x.staff.forEach((st) => { st.status = st.status || 'approved'; });
@@ -474,13 +487,21 @@ export function createDemoBackend() {
         const st = d.staff.find((x) => x.key === key && x.active && x.status !== 'pending');
         if (st) {
           if (!st.last_used_at || Date.now() - new Date(st.last_used_at) > 3600e3) { st.last_used_at = new Date().toISOString(); psave(); }
+          let typed = '';
+          try { typed = (localStorage.getItem('gig-my-name') || '').trim(); } catch {}
+          if (st.shared) return { role: 'admin', who: typed || 'Team (admin link)', hub: !!st.hub, askName: !typed };
           return { role: 'admin', who: st.name, hub: !!st.hub };
         }
         const e = new Error('This access link is no longer valid. Please ask for a new one.'); e.code = 'PRINT_AUTH'; throw e;
       };
       const role = (key) => actor(key).role;
       const needMaster = (key) => { if (role(key) !== 'master') throw new Error('Only the master link can do that.'); };
-      const staffOut = () => pload().staff.map(({ pin, ...x }) => ({ ...clone(x), status: x.status || 'approved', passcode: !!pin }));
+      const staffOut = () => pload().staff.filter((x) => !x.shared).map(({ pin, ...x }) => ({ ...clone(x), status: x.status || 'approved', passcode: !!pin }));
+      const adminLinksOut = () => {
+        const one = (x) => x && { id: x.id, key: x.key, active: x.active, last_used_at: x.last_used_at || null };
+        const shared = pload().staff.filter((x) => x.shared);
+        return { print: one(shared.find((x) => !x.hub)), hub: one(shared.find((x) => x.hub)) };
+      };
       const staffName = (n) => { n = String(n || '').trim().slice(0, 60); if (!n) throw new Error("Type the person's name."); return n; };
       const staffFind = (id) => { const x = pload().staff.find((s) => s.id === id); if (!x) throw new Error('That link no longer exists.'); return x; };
       const orderOk = (k) => pload().settings.orderActive && k === pload().settings.orderKey;
@@ -568,9 +589,9 @@ export function createDemoBackend() {
           const a = actor(key);
           const r = a.role;
           const st = pload().settings;
-          return { role: r, name: a.who, via: key ? 'key' : 'token', hub: !!a.hub, hubLinks: true, questions: clone(pload().questions), botLinked: !!st.webhookUrl, readyMessage: st.readyMessage,
+          return { role: r, name: a.who, via: key ? 'key' : 'token', hub: !!a.hub, askName: !!a.askName, hubLinks: true, questions: clone(pload().questions), botLinked: !!st.webhookUrl, readyMessage: st.readyMessage,
                    newOrderMessage: st.newOrderMessage, notifyOnDone: st.notifyOnDone, storage: demoStorage(),
-                   ...(r === 'master' ? { settings: settingsOut(), staff: staffOut() } : {}) };
+                   ...(r === 'master' ? { settings: settingsOut(), staff: staffOut(), adminLinks: adminLinksOut() } : {}) };
         },
         async orders(key) { await wait(); role(key); return clone(pload().orders); },
         async update(key, id, patch) {

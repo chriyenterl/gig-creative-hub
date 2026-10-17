@@ -33,7 +33,7 @@ addEventListener('hashchange', () => { if (takeKeyFromLink()) location.reload();
 const linkFor = (page, key) => new URL(page === 'order' ? 'order.html#' + key : 'index.html#k=' + key, location.href.split('#')[0]).href;
 
 // ── Tiny store ─────────────────────────────────────────────────────────────
-let P = { loaded: false, role: null, name: '', via: 'key', hub: false, passcode: false, staff: [], devices: [], hubLinks: false, pushKey: null, questions: [], settings: null, orders: [], botLinked: false, readyMessage: '', newOrderMessage: '', notifyOnDone: true };
+let P = { loaded: false, role: null, name: '', via: 'key', hub: false, passcode: false, askName: false, adminLinks: null, staff: [], devices: [], hubLinks: false, pushKey: null, questions: [], settings: null, orders: [], botLinked: false, readyMessage: '', newOrderMessage: '', notifyOnDone: true };
 const subs = new Set();
 const setP = (patch) => { P = { ...P, ...patch }; subs.forEach((f) => f(P)); };
 function usePrint() {
@@ -637,6 +637,7 @@ function Access() {
   return html`
     <${PageHead} title="Links & access" sub="Customers order through one shared link, each team member has their own link, and master runs everything." />
     <div class="access-grid access-grid-2">
+      <${AdminLinkCards} />
       <${LinkCard} title="Customer order link" url=${linkFor('order', settings.orderKey)} active=${settings.orderActive} canDisable
         hint="One link for all customers — share it on WhatsApp, your Instagram bio or website. Anyone with it can place an order."
         onToggle=${() => toggle('order', settings.orderActive)} onChange=${() => change('order', 'customer order link')} />
@@ -648,6 +649,45 @@ function Access() {
     <${MessagesCard} />
     <${BotCard} />
     <${AlertsCard} />`;
+}
+
+// Two shared admin links — no sign-up: one opens the Print Hub, the other the Creative Hub (with the Print Hub in its menu).
+// Whoever opens one is asked their name once, for the order history. Team-member rights: no settings, no team management.
+function AdminLinkCards() {
+  const { adminLinks } = usePrint();
+  if (!adminLinks) return null;
+  const refresh = async (fn, msg) => {
+    try { await fn(); const me = await api.print.me(getKey()); setP({ adminLinks: me.adminLinks, staff: me.staff || P.staff }); toast(msg); } catch (e) { toastError(e); }
+  };
+  const card = (link, title, url, hint) => link && html`<${LinkCard} title=${title} url=${url} active=${link.active} canDisable hint=${hint}
+    onToggle=${() => refresh(() => api.print.staffUpdate(getKey(), link.id, { active: !link.active }), link.active ? `${title} turned off — anyone using it is signed out.` : `${title} is on again.`)}
+    onChange=${async () => {
+      if (!(await confirmDialog({ title: `Change the ${title.toLowerCase()}?`, message: 'A new link is made and the old one stops working straight away (anyone using it is signed out). Share the new one.', confirmLabel: 'Change link' }))) return;
+      refresh(() => api.print.staffRegenerate(getKey(), link.id), 'New link made — the old one no longer works.');
+    }} />`;
+  return html`
+    ${card(adminLinks.print, 'Print Hub admin link', linkFor('admin', adminLinks.print?.key),
+      'For your team — no sign-up. Opens the Print Hub: see orders, add orders, move them New → Pending → Completed, notes, job sheets. They can\'t change settings or delete orders.')}
+    ${card(adminLinks.hub, 'Creative Hub admin link', new URL('../index.html#k=' + adminLinks.hub?.key, location.href.split('#')[0]).href,
+      'For your team — no sign-up. Opens the Creative Hub (library, uploads, review, talents…) with the Print Hub in its menu. Only owners can manage the team or settings.')}`;
+}
+
+// The first time someone opens a shared admin link, ask their name (kept on their device, shown in order history).
+function AskNameCard() {
+  const [name, setName] = useState('');
+  if (!P.askName) return null;
+  const save = (e) => {
+    e.preventDefault();
+    if (name.trim().length < 2) return;
+    try { localStorage.setItem('gig-my-name', name.trim().slice(0, 40)); } catch {}
+    location.reload();
+  };
+  return html`<form class="alert-banner no-print" onSubmit=${save}>
+    <span class="alert-banner-icon"><${Icon} name="users" size=${20} /></span>
+    <div><b>What's your name?</b><div class="small muted">It's shown next to what you do, e.g. “Moved to Completed · by Ali”.</div>
+      <div class="inline-form"><input value=${name} maxlength="40" placeholder="Your name" aria-label="Your name" onInput=${(e) => setName(e.target.value)} />
+        <button class="btn btn-primary btn-sm" disabled=${name.trim().length < 2}>Save</button></div></div>
+  </form>`;
 }
 
 // Staff add an order themselves — for walk-in, phone or WhatsApp customers. Same questions as the customer form,
@@ -976,6 +1016,7 @@ function Shell() {
     <div class="scrim" onClick=${() => setMenuOpen(false)}></div>
     <main class="main">
       ${MODE === 'demo' && html`<div class="demo-banner no-print"><${Icon} name="alert" size=${16} /><span><b>Demo mode</b> — sample orders, saved only in this browser.</span></div>`}
+      <${AskNameCard} />
       <${AlertBanner} />
       <${StorageWarning} storage=${P.storage} print />
       ${page}
@@ -1007,7 +1048,8 @@ function App() {
       try {
         const me = await api.print.me(getKey());
         const orders = await api.print.orders(getKey());
-        setP({ loaded: true, role: me.role, name: me.name || '', via: me.via || (getKey() ? 'key' : 'token'), hub: !!me.hub, passcode: !!me.passcode, staff: me.staff || [], devices: me.devices || [], hubLinks: !!me.hubLinks, pushKey: me.pushKey || null, questions: me.questions, settings: me.settings || null, botLinked: !!me.settings?.webhookUrl || !!me.botLinked,
+        setP({ loaded: true, role: me.role, name: me.name || '', via: me.via || (getKey() ? 'key' : 'token'), hub: !!me.hub, passcode: !!me.passcode,
+               askName: !!me.askName, adminLinks: me.adminLinks || null, staff: me.staff || [], devices: me.devices || [], hubLinks: !!me.hubLinks, pushKey: me.pushKey || null, questions: me.questions, settings: me.settings || null, botLinked: !!me.settings?.webhookUrl || !!me.botLinked,
                readyMessage: me.settings?.readyMessage || me.readyMessage || '', newOrderMessage: me.settings?.newOrderMessage || me.newOrderMessage || '',
                notifyOnDone: me.notifyOnDone !== false, storage: me.storage || null,
                orders: orders.sort(byNewest) });

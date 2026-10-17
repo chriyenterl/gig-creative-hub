@@ -28,10 +28,8 @@ export function filterAssets(assets, q) {
     return true;
   });
   const by = {
-    old: (a, b) => (a.created_at > b.created_at ? 1 : -1),
     most: (a, b) => b.use_count - a.use_count,
     least: (a, b) => a.use_count - b.use_count,
-    az: (a, b) => a.title.localeCompare(b.title),
   }[q.sort] || ((a, b) => (a.created_at < b.created_at ? 1 : -1));
   return rows.sort(by);
 }
@@ -195,10 +193,8 @@ export function Library({ query }) {
       <${TalentSelect} value=${query.talent || ''} onChange=${(v) => set({ talent: v })} placeholder="All talents" />
       <select value=${query.sort || ''} onChange=${(e) => set({ sort: e.target.value })} aria-label="Sort">
         <option value="">Newest first</option>
-        <option value="old">Oldest first</option>
         <option value="most">Most used</option>
         <option value="least">Least used</option>
-        <option value="az">Title A–Z</option>
       </select>
     </div>
 

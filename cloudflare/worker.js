@@ -79,8 +79,7 @@ const INDEXES = [
 ];
 
 const SEED_SEASONS = [
-  ['New Year', '#2a78d6'], ["Valentine's Day", '#e87ba4'], ['Spring', '#1baf7a'], ['Summer', '#eda100'],
-  ['Back to School', '#4a3aa7'], ['Halloween', '#eb6834'], ['Black Friday / 11.11', '#0b0b0b'], ['Christmas & Holidays', '#e34948'],
+  ['New Year', '#2a78d6'], ["Valentine's Day", '#e87ba4'], ['Back to School', '#4a3aa7'], ['Christmas & Holidays', '#e34948'],
 ];
 
 // File keys in R2 start with one of these folders.

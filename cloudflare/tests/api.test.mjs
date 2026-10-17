@@ -48,7 +48,7 @@ ok((await api('bootstrap', {})).code === 'AUTH', 'team data needs a login');
 
 console.log('Bootstrap & tables');
 const boot = await data('bootstrap', { token: T });
-ok(boot.seasons.length === 8, '8 seasons seeded', boot.seasons.length);
+ok(boot.seasons.length === 4 && !boot.seasons.some((x) => /Spring|Summer|Halloween|Black Friday/.test(x.name)), '4 starting seasons (no Spring, Summer, Halloween, Black Friday)', boot.seasons.map((x) => x.name));
 ok(boot.storage && boot.storage.limit === 10e9 && boot.storage.used === 0, 'storage starts at 0 of 10 GB', boot.storage);
 ok(Array.isArray(boot.assets) && boot.team_members[0].pass_hash === undefined, 'no password hashes sent to the browser');
 const tal = await data('insert', { token: T, table: 'talents', row: { name: 'Aisha', followers: '12000', tags: ['food', 'ugc'], languages: 'English, Malay', status: 'contacted' } });

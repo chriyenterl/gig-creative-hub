@@ -7,7 +7,7 @@ One central place for your marketing media — instead of juggling Google Sheets
 | **Dashboard** | Totals at a glance: how much content you have, what's waiting for approval, what's been used vs. not used (photos and videos separately), content per season, and your talent pipeline. |
 | **Review** | Everything creators upload lands here. Approve it, request changes, or reject it — with a team-only note. |
 | **Library** | Every file in one searchable grid, split into **Final content**, **Raw footage** and **Brand kit** (logos, mascot, guidelines…). Filter by type, season, approval, used/not used, talent or tag. Download, copy a share link, or **mark as used** (where + when). Bulk-edit many at once. Export the list to CSV. |
-| **Seasons** | Content sorted by campaign season, plus **Evergreen** for regular any-time content. Add, rename, recolour and reorder seasons. |
+| **Seasons** | Content sorted by campaign season (starts with New Year, Valentine's Day, Back to School and Christmas & Holidays), plus **Evergreen** for regular any-time content. Add, rename, recolour and reorder seasons. |
 | **Talents** | Scout and track influencers: platforms, followers, **tier** (Nano UGC / Micro KOL…), **type**, **brand**, **languages**, rates, contact, notes — and a clear **decision** status (Prospect → Contacted → Awaiting approval → Approved – go ahead → In production → Delivered, or Not proceeding). Switch between a **table** and a **board** (drag cards between statuses). **Import your list from Notion** or any CSV. |
 | **Upload links** | Give each creator their **own private link**. They see only an upload page — nothing else. You can **disable**, **change** (new address, old one stops working), set an **expiry**, or **delete** each link at any time. |
 
@@ -151,7 +151,8 @@ Open it from the Creative Hub sidebar (**Print Hub**). Owners signed in to the h
 | **Join link** — `join.html#…` | Your team (one shared link) | Ask to join with their name + a 6-digit passcode; you approve each person as **Print Hub only** or **Print Hub + Creative Hub** |
 | **Master link** — `print/index.html#k=…` | You | Everything, plus: edit the order form, links & bot settings, delete orders |
 
-All of them are in **Print Hub → Links & access** (master).
+All of them are in **Print Hub → Links & access** (master). The admin links, the join link and the team list are also in the
+**Creative Hub → Links & access** (owners), so you can manage your team from either app.
 
 **Admin links (quickest — no sign-up):** send the **Print Hub admin link** or the **Creative Hub admin link** to your team.
 Whoever opens one is asked their name once (kept on their phone, shown in the order history) and is straight in. They can do the

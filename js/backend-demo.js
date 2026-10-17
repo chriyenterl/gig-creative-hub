@@ -105,8 +105,7 @@ function seed() {
   const dayAgo = (days) => new Date(now - days * 86400e3).toISOString().slice(0, 10);
 
   const seasons = [
-    ['New Year', '#2a78d6'], ['Valentine\'s Day', '#e87ba4'], ['Spring', '#1baf7a'], ['Summer', '#eda100'],
-    ['Back to School', '#4a3aa7'], ['Halloween', '#eb6834'], ['Black Friday / 11.11', '#0b0b0b'], ['Christmas & Holidays', '#e34948'],
+    ['New Year', '#2a78d6'], ['Valentine\'s Day', '#e87ba4'], ['Back to School', '#4a3aa7'], ['Christmas & Holidays', '#e34948'],
   ].map(([name, color], i) => ({ id: uid(), name, color, sort_order: i + 1, created_at: ago(120) }));
   const S = Object.fromEntries(seasons.map((s) => [s.name, s.id]));
 

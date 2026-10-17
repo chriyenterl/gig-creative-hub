@@ -13,6 +13,7 @@ import { Seasons } from './views/seasons.js';
 import { Talents, TalentDetail } from './views/talents.js';
 import { Links } from './views/links.js';
 import { Settings } from './views/settings.js';
+import { Access } from './views/access.js';
 import { AssetDetail } from './views/asset-detail.js';
 
 setApi(await loadBackend());
@@ -41,8 +42,9 @@ const NAV = [
     { id: 'talents', label: 'Talents' },
     { id: 'links', label: 'Upload links' },
   ] },
+  { id: 'access', label: 'Links & access', icon: 'key', ownersOnly: true },
 ];
-const PAGE_LABELS = { library: 'Library', seasons: 'Seasons', talents: 'Talents', links: 'Upload links', settings: 'Settings' };
+const PAGE_LABELS = { library: 'Library', seasons: 'Seasons', talents: 'Talents', links: 'Upload links', access: 'Links & access', settings: 'Settings' };
 
 // Which sidebar groups are unfolded (remembered in this browser).
 const GROUPS_KEY = 'gig-nav-groups';
@@ -66,6 +68,12 @@ function Shell() {
   useEffect(() => { setMenuOpen(false); window.scrollTo(0, 0); }, [pathKey]);
 
   const pending = s.assets.filter((a) => a.status === 'pending').length;
+  const owner = !s.user?.viaLink;
+  // Owners: how many people are waiting to join (badge on Links & access).
+  useEffect(() => {
+    if (!owner || !api.print) return;
+    api.print.me(null).then((me) => setState({ teamWaiting: (me.staff || []).filter((x) => x.status === 'pending').length })).catch(() => {});
+  }, [owner]);
   const pages = {
     dashboard: () => html`<${Dashboard} />`,
     review: () => html`<${Review} query=${route.query} />`,
@@ -74,6 +82,7 @@ function Shell() {
     talents: () => (p1 ? html`<${TalentDetail} id=${p1} />` : html`<${Talents} query=${route.query} />`),
     links: () => html`<${Links} query=${route.query} />`,
     settings: () => html`<${Settings} />`,
+    access: () => (s.user?.viaLink ? html`<${Dashboard} />` : html`<${Access} />`),
   };
   const page = (pages[p0] || pages.dashboard)();
   const pageLabel = PAGE_LABELS[p0] || NAV.find((n) => n.id === p0)?.label || 'Dashboard';
@@ -98,8 +107,8 @@ function Shell() {
     <aside class="sidebar">
       <a href=${hrefFor('dashboard')} class="sidebar-brand"><${Brand} /></a>
       <nav>
-        ${NAV.map((n) => {
-          if (!n.group) return html`<${NavLink} key=${n.id} n=${n} active=${isActive(n)} badge=${n.id === 'review' ? pending : 0} />`;
+        ${NAV.filter((n) => owner || !n.ownersOnly).map((n) => {
+          if (!n.group) return html`<${NavLink} key=${n.id} n=${n} active=${isActive(n)} badge=${n.id === 'review' ? pending : n.id === 'access' ? s.teamWaiting || 0 : 0} />`;
           const open = isOpen(n.group);
           return html`<div key=${n.group} class=${'nav-group' + (open ? ' open' : '')}>
             <button class=${'nav-item nav-group-btn' + (!open && groupHasPage(n) ? ' has-active' : '')}

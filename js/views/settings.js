@@ -40,7 +40,7 @@ function Team() {
   return html`<section class="card">
     <header class="card-head"><h2>Owners</h2><span class="muted">Sign in with email + password · can manage everything</span></header>
     ${api.auth.signInWithPasscode && html`<p class="muted small">Your team doesn't need to be added here: they join with the join link and sign in with
-      their name + passcode. Approve them in <a class="link" href="print/index.html#/access">Print Hub → Links & access</a>.</p>`}
+      their name + passcode. Approve them in <a class="link" href="#/access">Links & access</a>.</p>`}
     <ul class="plain-list">
       ${team_members.map((m) => html`<li key=${m.id}>
         <span><span class="avatar">${(m.name || m.email).slice(0, 1).toUpperCase()}</span>

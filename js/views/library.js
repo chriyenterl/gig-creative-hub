@@ -130,12 +130,13 @@ export function Library({ query }) {
   const visible = filtered.slice(0, limit);
   const urls = useSignedUrls(visible.map((a) => a.storage_path));
 
-  const inCat = s.assets.filter((a) => !query.cat || a.category === query.cat);
+  const ofType = (a) => !query.type || a.media_type === query.type; // the Photos / Videos pages
+  const inCat = s.assets.filter((a) => (!query.cat || a.category === query.cat) && ofType(a));
   const tagCounts = {};
   inCat.forEach((a) => (a.tags || []).forEach((t) => (tagCounts[t] = (tagCounts[t] || 0) + 1)));
   const topTags = Object.entries(tagCounts).sort((a, b) => b[1] - a[1]).slice(0, 14);
-  const catCount = (c) => s.assets.filter((a) => !c || a.category === c).length;
-  const activeFilters = ['q', 'type', 'season', 'status', 'usage', 'talent', 'tag'].filter((k) => query[k]).length;
+  const catCount = (c) => s.assets.filter((a) => (!c || a.category === c) && ofType(a)).length;
+  const activeFilters = ['q', 'season', 'status', 'usage', 'talent', 'tag'].filter((k) => query[k]).length;
 
   const toggle = (id) => setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const stopSelecting = () => { setSelecting(false); setSelected(new Set()); };
@@ -157,8 +158,12 @@ export function Library({ query }) {
   ]);
 
   const cat = CATEGORIES.find((c) => c.id === query.cat);
+  const kind = MEDIA[query.type];
+  const title = cat && kind ? `${cat.label} · ${kind.plural}` : cat ? cat.label : kind ? kind.plural : 'Content library';
+  const sub = cat ? cat.hint : kind ? `All your ${kind.plural.toLowerCase()} — narrow them down by season, tag, approval or talent below.`
+    : 'Every photo, video and file in one place — search, filter, download and reuse.';
   return html`
-    <${PageHead} title=${cat ? cat.label : 'Content library'} sub=${cat ? cat.hint : 'Every photo, video and file in one place — search, filter, download and reuse.'}>
+    <${PageHead} title=${title} sub=${sub}>
       <button class="btn btn-ghost" onClick=${exportCsv}><${Icon} name="download" size=${16} />Export list</button>
       <button class=${'btn' + (selecting ? ' btn-active' : '')} onClick=${() => (selecting ? stopSelecting() : setSelecting(true))}>
         <${Icon} name="select" size=${16} />${selecting ? 'Done' : 'Select'}
@@ -205,7 +210,7 @@ export function Library({ query }) {
 
     <div class="result-line">
       <span>${filtered.length} ${filtered.length === 1 ? 'item' : 'items'}</span>
-      ${activeFilters > 0 && html`<button class="link" onClick=${() => go('library', { cat: query.cat }, { replace: true })}>Clear filters</button>`}
+      ${activeFilters > 0 && html`<button class="link" onClick=${() => go('library', { cat: query.cat, type: query.type }, { replace: true })}>Clear filters</button>`}
       ${selecting && html`<button class="link" onClick=${() => setSelected(new Set(filtered.map((a) => a.id)))}>Select all ${filtered.length}</button>`}
     </div>
 

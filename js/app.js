@@ -33,6 +33,8 @@ const NAV = [
   { id: 'review', label: 'Review', icon: 'inbox' },
   { group: 'content', label: 'Content', icon: 'image', items: [
     { id: 'library', label: 'All content' },
+    { id: 'library', type: 'image', label: 'Photos' },
+    { id: 'library', type: 'video', label: 'Videos' },
     { id: 'library', cat: 'final', label: 'Final content' },
     { id: 'library', cat: 'raw', label: 'Raw footage' },
     { id: 'library', cat: 'brand', label: 'Brand kit' },
@@ -52,7 +54,8 @@ const readGroups = () => { try { return JSON.parse(localStorage.getItem(GROUPS_K
 const saveGroups = (g) => { try { localStorage.setItem(GROUPS_KEY, JSON.stringify(g)); } catch {} };
 
 function NavLink({ n, active, sub, badge }) {
-  return html`<a href=${hrefFor(n.id, n.cat ? { cat: n.cat } : {})} class=${'nav-item' + (sub ? ' nav-sub' : '') + (active ? ' active' : '')}
+  const query = { ...(n.cat ? { cat: n.cat } : {}), ...(n.type ? { type: n.type } : {}) };
+  return html`<a href=${hrefFor(n.id, query)} class=${'nav-item' + (sub ? ' nav-sub' : '') + (active ? ' active' : '')}
       aria-current=${active ? 'page' : undefined}>
     ${n.icon && html`<${Icon} name=${n.icon} />`}<span>${n.label}</span>
     ${badge > 0 && html`<span class="nav-badge">${badge}</span>`}
@@ -88,7 +91,8 @@ function Shell() {
   const pageLabel = PAGE_LABELS[p0] || NAV.find((n) => n.id === p0)?.label || 'Dashboard';
   useEffect(() => { document.title = `${pageLabel} · ${CONFIG.BRAND_NAME}`; }, [pageLabel]);
 
-  const isActive = (n) => n.id === p0 && (n.id !== 'library' || (n.cat || '') === (route.query.cat || ''));
+  const isActive = (n) => n.id === p0 && (n.id !== 'library'
+    || ((n.cat || '') === (route.query.cat || '') && (n.type || '') === (route.query.type || '')));
   const groupHasPage = (g) => g.items.some((n) => n.id === p0);
   const [groups, setGroups] = useState(readGroups);
   const toggleGroup = (key) => setGroups((g) => { const next = { ...g, [key]: !isOpen(key) }; saveGroups(next); return next; });

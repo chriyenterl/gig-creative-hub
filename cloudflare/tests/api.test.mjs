@@ -97,6 +97,15 @@ ok((await api('update', { token: T, table: 'assets', id: withCover.id, patch: { 
 edited = await data('update', { token: T, table: 'assets', id: withCover.id, patch: { cover_path: cv } });
 ok(edited.cover_path === cv, 'and added back');
 
+console.log('Links instead of files');
+const usedBeforeLink = (await data('storage', { token: T })).used;
+const li = await data('insert', { token: T, table: 'assets', row: { title: 'Full video', category: 'final', media_type: 'video', external_url: ' drive.google.com/file/d/abc123/view ', storage_path: 'ignored', cover_path: cv, caption: 'Watch!' } });
+ok(li.external_url === 'https://drive.google.com/file/d/abc123/view' && li.storage_path === null && li.media_type === 'video' && li.cover_path === cv, 'a link item is saved (https:// added, no file)', li);
+ok((await data('storage', { token: T })).used === usedBeforeLink, 'a link uses no storage');
+ok((await api('insert', { token: T, table: 'assets', row: { title: 'x', external_url: 'not a link' } })).ok === false, 'a broken link is refused');
+ok((await data('update', { token: T, table: 'assets', id: li.id, patch: { external_url: 'dropbox.com/s/xyz' } })).external_url === 'https://dropbox.com/s/xyz', 'the link can be edited');
+ok((await data('update', { token: T, table: 'assets', id: withCover.id, patch: { external_url: 'https://x.com' } })).external_url === null, "a file item can't be turned into a link");
+
 const use = await data('insert', { token: T, table: 'asset_usage', row: { asset_id: asset.id, channel: 'instagram', used_on: '2026-10-01' } });
 ok(use.created_by === 'owner@example.com', 'usage logged with who');
 let a2 = (await data('list', { token: T, table: 'assets', eq: { id: asset.id } }))[0];
@@ -122,12 +131,16 @@ const subId = await data('linkSubmit', { linkToken: link.token, fileId: ck, titl
 ok(typeof subId === 'string', 'creator submit creates an asset');
 const subRow = (await data('list', { token: T, table: 'assets', eq: { id: subId } }))[0];
 ok(subRow.cover_path === ccover && subRow.caption === 'Selamat Hari Raya!', "creator's cover photo and caption are saved", subRow);
+ok((await api('linkSubmit', { linkToken: link.token, externalUrl: 'nope nope' })).ok === false, "creator's broken link is refused");
+const linkSubId = await data('linkSubmit', { linkToken: link.token, externalUrl: 'wetransfer.com/downloads/abc', mediaType: 'video', title: 'Raw 4K', caption: 'Raw files' });
+const linkSub = (await data('list', { token: T, table: 'assets', eq: { id: linkSubId } }))[0];
+ok(linkSub.external_url === 'https://wetransfer.com/downloads/abc' && linkSub.status === 'pending' && linkSub.source === 'talent' && linkSub.media_type === 'video', 'creator can send a link instead of a file — it goes to Review', linkSub);
 ok((await api('linkSubmit', { linkToken: link.token, fileId: ck, title: 'again' })).ok === false, 'same file cannot be sent twice');
 ok((await api('linkSubmit', { linkToken: link.token, fileId: k1 })).ok === false, "creator can't claim a file outside their folder");
 const subs = await data('linkSubmissions', { linkToken: link.token });
-ok(subs.length === 1 && subs[0].title === 'Raya clip' && subs[0].media_type === 'video' && !subs[0].storage_path, 'creator sees only titles/status of their uploads', subs);
+ok(subs.length === 2 && subs.some((x) => x.title === 'Raya clip') && subs.some((x) => x.title === 'Raw 4K') && !subs[0].storage_path && !subs[0].external_url, 'creator sees only titles/status of what they sent', subs);
 const linkRow = (await data('list', { token: T, table: 'upload_links', eq: { id: link.id } }))[0];
-ok(linkRow.upload_count === 1 && !!linkRow.last_upload_at, 'link upload count updated', linkRow);
+ok(linkRow.upload_count === 2 && !!linkRow.last_upload_at, 'link upload count updated', linkRow);
 const changed = await data('update', { token: T, table: 'upload_links', id: link.id, patch: { token: 'x' } });
 ok(changed.token !== link.token && changed.token.length >= 32, '"Change link" gets a new strong code');
 ok((await data('linkInfo', { linkToken: link.token })) === null, 'old link stops working');

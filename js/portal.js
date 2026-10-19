@@ -4,7 +4,10 @@ import { html, render, useState, useEffect } from './lib.js';
 import { loadBackend } from './api.js';
 import { CONFIG } from '../config.js';
 import { uid, safeName, stripExt, fmtBytes, timeAgo, mediaTypeFor, MEDIA } from './util.js';
-import { Icon, Dropzone, Progress, ToastHost, CoverPicker } from './ui.js';
+import { Icon, Dropzone, Progress, ToastHost, CoverPicker, Tabs, toastError } from './ui.js';
+import { normalizeLink } from './print/model.js';
+
+const LINK_KINDS = [['video', 'Video'], ['image', 'Photo'], ['document', 'Document'], ['other', 'Other']];
 import { Brand } from './views/login.js';
 
 const api = await loadBackend({ portal: true });
@@ -23,6 +26,9 @@ function Portal() {
   const [items, setItems] = useState([]);
   const [running, setRunning] = useState(false);
   const [finished, setFinished] = useState(0);
+  const [mode, setMode] = useState('files'); // 'files' | 'link'
+  const [link, setLink] = useState({ url: '', title: '', kind: 'video', note: '', caption: '', cover: null });
+  const setL = (k) => (v) => setLink((x) => ({ ...x, [k]: v?.target ? v.target.value : v }));
 
   const loadSubs = () => api.portal.submissions(token).then(setSubs).catch(() => {});
   useEffect(() => {
@@ -75,6 +81,25 @@ function Portal() {
     }
   };
 
+  // Send a link (Google Drive, Dropbox, WeTransfer…) instead of a file — handy for huge videos.
+  const sendLink = async () => {
+    if (!normalizeLink(link.url)) return toastError(new Error('Paste the whole link (it usually starts with https://).'));
+    setRunning(true);
+    try {
+      let cover = null;
+      if (link.cover && link.kind === 'video') {
+        const coverPath = `submissions/${token}/${uid()}-cover-${safeName(link.cover.name)}`;
+        cover = await api.uploadFile(coverPath, link.cover, { linkToken: token }) || coverPath;
+      }
+      await api.portal.submit(token, { url: link.url.trim(), media_type: link.kind, title: link.title, description: link.note,
+        caption: link.caption.trim() || null, cover });
+      setLink({ url: '', title: '', kind: 'video', note: '', caption: '', cover: null });
+      setFinished(1);
+      loadSubs();
+    } catch (e) { toastError(e); }
+    setRunning(false);
+  };
+
   if (info === undefined) return html`<div class="loading"><div class="spinner"></div></div>`;
   if (!info || info.error) {
     return html`<div class="auth-page"><div class="auth-card card center">
@@ -94,13 +119,33 @@ function Portal() {
         ${info.season_name && html`<p class="muted small">Campaign: <b>${info.season_name}</b></p>`}
 
         ${finished > 0 && html`<div class="success-box"><${Icon} name="check" size=${20} />
-          <div><b>Thank you! ${finished} file${finished === 1 ? '' : 's'} received.</b><br />
+          <div><b>Thank you! ${mode === 'link' ? 'Your link was' : `${finished} file${finished === 1 ? '' : 's'}`} received.</b><br />
           <span class="muted small">You can upload more any time with this same link.</span></div></div>`}
 
+        <div class="upload-mode"><${Tabs} value=${mode} onChange=${(m) => !running && setMode(m)}
+          items=${[{ id: 'files', label: 'Upload from Files' }, { id: 'link', label: 'Send a link' }]} /></div>
+
+        ${mode === 'link' ? html`<div class="link-form">
+          <label class="field"><span class="field-label">Link</span>
+            <span class="field-hint">Google Drive, Dropbox, WeTransfer… make sure anyone with the link can open it.</span>
+            <input type="url" inputmode="url" placeholder="https://…" value=${link.url} onInput=${setL('url')} disabled=${running} autocomplete="off" /></label>
+          <label class="field"><span class="field-label">Title</span>
+            <input value=${link.title} onInput=${setL('title')} disabled=${running} placeholder="e.g. Full video — 4K" /></label>
+          <label class="field"><span class="field-label">It's a</span>
+            <select value=${link.kind} onChange=${setL('kind')} disabled=${running}>${LINK_KINDS.map(([id, label]) => html`<option value=${id}>${label}</option>`)}</select></label>
+          <label class="field"><span class="field-label">Caption (optional)</span>
+            <textarea rows="2" value=${link.caption} onInput=${setL('caption')} disabled=${running} placeholder="e.g. the post text"></textarea></label>
+          <label class="field"><span class="field-label">Note for the team (optional)</span>
+            <input value=${link.note} onInput=${setL('note')} disabled=${running} /></label>
+          ${link.kind === 'video' && html`<div class="field"><span class="field-label">Cover photo (optional)</span>
+            <${CoverPicker} file=${link.cover} disabled=${running} onPick=${(f) => setL('cover')(f)} onRemove=${() => setL('cover')(null)} /></div>`}
+          <button class="btn btn-primary btn-block btn-lg" disabled=${running || !link.url.trim()} onClick=${sendLink}>
+            <${Icon} name="link" size=${18} />${running ? 'Sending…' : 'Send link'}</button>
+        </div>` : html`
         <${Dropzone} onFiles=${addFiles}>
           <${Icon} name="upload" size=${32} />
-          <b>Drop your photos & videos here</b>
-          <span class="muted small">or click to choose files · large videos are fine, keep this page open until it's done</span>
+          <b>Choose your photos & videos from Files</b>
+          <span class="muted small">or drop them here · large videos are fine, keep this page open until it's done</span>
         <//>
 
         ${items.length > 0 && html`<ul class="file-list">
@@ -125,7 +170,7 @@ function Portal() {
         </ul>
         <button class="btn btn-primary btn-block btn-lg" disabled=${running || !todo.length} onClick=${send}>
           <${Icon} name="upload" size=${18} />${running ? 'Uploading… please keep this page open' : `Send ${todo.length} file${todo.length === 1 ? '' : 's'}`}
-        </button>`}
+        </button>`}`}
       </section>
 
       ${subs.length > 0 && html`<section class="card portal-card">

@@ -743,6 +743,16 @@ export function createDemoBackend() {
         await wait();
         const l = validLink(token);
         if (!l) throw new Error('This upload link is no longer active. Please contact the team.');
+        if (m.url) { // a link instead of a file
+          const url = normalizeLink(m.url);
+          if (!url) throw new Error("That link doesn't look right — copy the whole link (it usually starts with https://).");
+          const r = { ...DEFAULTS.assets(), id: uid(), created_at: new Date().toISOString(), title: (m.title || '').trim() || 'Link from ' + l.label,
+            description: (m.description || '').trim() || null, category: 'final', media_type: m.media_type || 'other', season_id: l.season_id,
+            talent_id: l.talent_id, upload_link_id: l.id, source: 'talent', storage_path: null, external_url: url, status: 'pending',
+            uploaded_by: l.label, cover_path: m.cover || null, caption: (m.caption || '').trim() || null };
+          db.assets.push(r); l.upload_count = (l.upload_count || 0) + 1; l.last_upload_at = r.created_at; save();
+          return r.id;
+        }
         if (!m.path.startsWith(`submissions/${token}/`)) throw new Error('Invalid file location.');
         const mime = m.mime_type || 'application/octet-stream';
         const kind = mime.startsWith('image/') ? 'image' : mime.startsWith('video/') ? 'video' : mime.startsWith('audio/') ? 'audio' : mime === 'application/pdf' ? 'document' : 'other';

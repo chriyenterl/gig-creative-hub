@@ -21,7 +21,7 @@ export function filterAssets(assets, q) {
     if (q.talent && a.talent_id !== q.talent) return false;
     if (q.tag && !(a.tags || []).includes(q.tag)) return false;
     if (text) {
-      const hay = [a.title, a.caption, a.description, a.file_name, a.uploaded_by, talentById(a.talent_id)?.name, ...(a.tags || [])]
+      const hay = [a.title, a.caption, a.external_url, a.description, a.file_name, a.uploaded_by, talentById(a.talent_id)?.name, ...(a.tags || [])]
         .join(' ').toLowerCase();
       if (!hay.includes(text)) return false;
     }
@@ -152,6 +152,7 @@ export function Library({ query }) {
     { label: 'Talent', value: (a) => talentById(a.talent_id)?.name },
     { label: 'Tags', value: 'tags' },
     { label: 'Caption', value: 'caption' },
+    { label: 'Link', value: 'external_url' },
     { label: 'File name', value: 'file_name' },
     { label: 'Size', value: (a) => fmtBytes(a.size_bytes) },
     { label: 'Uploaded', value: (a) => fmtDate(a.created_at) },

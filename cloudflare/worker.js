@@ -22,7 +22,7 @@
 const TOKEN_DAYS = 30;           // how long a team login lasts
 const PBKDF2_ROUNDS = 20000;     // password hashing strength (kept modest for the free plan's CPU limit)
 const CHUNK = 10 * 1024 * 1024;  // upload part size — big files are sent in pieces of this size
-const SCHEMA_V = '8';            // bump when SCHEMA changes so new columns get added
+const SCHEMA_V = '9';            // bump when SCHEMA changes so new columns get added
 const GB = 1e9;                  // storage is counted the way Cloudflare bills it (1 GB = 1,000,000,000 bytes)
 const DEFAULT_LIMIT_GB = 10;     // uploads stop here (R2's free allowance) — change it in Settings
 
@@ -39,7 +39,7 @@ const SCHEMA = {
                   num: ['upload_count'], bool: ['is_active'] },
   assets:       { cols: ['id', 'title', 'description', 'category', 'media_type', 'season_id', 'talent_id', 'upload_link_id',
                          'source', 'storage_path', 'file_name', 'mime_type', 'size_bytes', 'tags', 'status', 'review_note',
-                         'reviewed_at', 'use_count', 'last_used_on', 'uploaded_by', 'cover_path', 'caption', 'created_at', 'updated_at'],
+                         'reviewed_at', 'use_count', 'last_used_on', 'uploaded_by', 'cover_path', 'caption', 'external_url', 'created_at', 'updated_at'],
                   num: ['size_bytes', 'use_count'], arr: ['tags'] },
   asset_usage:  { cols: ['id', 'asset_id', 'channel', 'note', 'used_on', 'created_by', 'created_at'] },
   print_orders: { cols: ['id', 'order_no', 'status', 'customer_name', 'company', 'phone', 'email', 'summary', 'quantity',
@@ -384,7 +384,14 @@ async function apiInsert(t, row, me) {
     const dup = await DB.prepare('SELECT 1 FROM seasons WHERE lower(name) = lower(?)').bind(String(row.name || '')).first();
     if (dup) fail('That already exists.');
   }
-  if (t === 'assets') {
+  if (t === 'assets' && row.external_url) { // a link (Google Drive, Dropbox, WeTransfer…) instead of an uploaded file
+    row.external_url = cleanLink(row.external_url);
+    if (!row.external_url) fail("That link doesn't look right — copy the whole link (it usually starts with https://).");
+    row.storage_path = null; row.file_name = null; row.size_bytes = null; row.mime_type = null;
+    if (!LINK_TYPES.includes(row.media_type)) row.media_type = 'other';
+    if (row.cover_path) await checkCover(row.cover_path);
+    if (row.caption != null) row.caption = cleanCaption(row.caption);
+  } else if (t === 'assets') {
     const key = String(row.storage_path || '');
     if (!key) fail('Missing file.');
     if (!LIBRARY.some((p) => key.startsWith(p))) fail('That file is not in the GIG Creative Hub storage.');
@@ -418,6 +425,11 @@ async function apiUpdate(t, id, patch) {
     delete patch.storage_path;
     if (patch.cover_path) await checkCover(patch.cover_path); // null removes the cover
     if (patch.caption !== undefined) patch.caption = cleanCaption(patch.caption);
+    if (patch.external_url !== undefined) {
+      const cur = await getRow('assets', String(id || ''));
+      if (!cur || !cur.external_url) delete patch.external_url; // only link items have a link
+      else if (!(patch.external_url = cleanLink(patch.external_url))) fail("That link doesn't look right — copy the whole link (it usually starts with https://).");
+    }
   }
   if (t === 'upload_links') {
     delete patch.folder_id;
@@ -947,6 +959,7 @@ async function checkCover(key, folders = [...LIBRARY, 'creators/']) {
   if (!String(head.httpMetadata?.contentType || '').startsWith('image/')) fail('The cover must be a photo (JPG, PNG…).');
 }
 const cleanCaption = (c) => String(c || '').trim().slice(0, 5000) || null;
+const LINK_TYPES = ['video', 'image', 'document', 'other']; // what a link item points to
 
 function mediaTypeFor(mime) {
   mime = String(mime || '');
@@ -993,6 +1006,20 @@ async function linkStartUpload(req) {
 async function linkSubmit(req) {
   const l = await activeLink(req.linkToken);
   if (!l) fail('This upload link is no longer active. Please contact the team.');
+  if (req.externalUrl && !req.fileId) { // the creator sent a link (Drive, Dropbox, WeTransfer…) instead of a file
+    const url = cleanLink(req.externalUrl);
+    if (!url) fail("That link doesn't look right — copy the whole link (it usually starts with https://).");
+    if (req.coverId) await checkCover(req.coverId, [await linkFolder(l)]);
+    const asset = await insertRow('assets', {
+      title: String(req.title || '').trim().slice(0, 300) || 'Link from ' + (l.label || 'creator'),
+      description: String(req.description || '').trim().slice(0, 5000) || null,
+      category: 'final', media_type: LINK_TYPES.includes(req.mediaType) ? req.mediaType : 'other',
+      season_id: l.season_id, talent_id: l.talent_id, upload_link_id: l.id, source: 'talent',
+      external_url: url, status: 'pending', uploaded_by: l.label, cover_path: req.coverId || null, caption: cleanCaption(req.caption),
+    });
+    await DB.prepare('UPDATE upload_links SET upload_count = COALESCE(upload_count, 0) + 1, last_upload_at = ? WHERE id = ?').bind(nowIso(), l.id).run();
+    return asset.id;
+  }
   const key = String(req.fileId || '');
   if (!l.folder_id || !key.startsWith(l.folder_id) || !knownKey(key)) fail('Invalid upload.');
   if (await DB.prepare('SELECT 1 FROM assets WHERE storage_path = ?').bind(key).first()) fail('This file was already sent.');

@@ -64,7 +64,7 @@ function ReviewItem({ asset }) {
         <button class="btn" disabled=${busy} onClick=${() => decide('changes')}><${Icon} name="edit" size=${16} />Request changes</button>
         <button class="btn btn-ghost-danger" disabled=${busy} onClick=${() => decide('rejected')}><${Icon} name="x" size=${16} />Reject</button>
         <span class="spacer"></span>
-        <button class="btn btn-ghost" onClick=${() => downloadAsset(asset)}><${Icon} name="download" size=${16} />Download</button>
+        <button class="btn btn-ghost" onClick=${() => downloadAsset(asset)}><${Icon} name=${asset.external_url ? 'external' : 'download'} size=${16} />${asset.external_url ? 'Open link' : 'Download'}</button>
         <button class="btn btn-ghost" onClick=${() => openAsset(asset.id)}>Details</button>
       </div>
     </div>

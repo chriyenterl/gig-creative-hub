@@ -60,7 +60,7 @@ function InfoForm({ asset }) {
   const initial = {
     title: asset.title, description: asset.description || '', category: asset.category,
     season_id: asset.season_id || '', talent_id: asset.talent_id || '', tags: (asset.tags || []).join(', '),
-    caption: asset.caption || '',
+    caption: asset.caption || '', external_url: asset.external_url || '',
   };
   const [d, setD] = useState(initial);
   const [busy, setBusy] = useState(false);
@@ -73,6 +73,7 @@ function InfoForm({ asset }) {
         title: d.title.trim() || asset.title, description: d.description.trim() || null, category: d.category,
         season_id: d.season_id || null, talent_id: d.talent_id || null, tags: parseTags(d.tags),
         caption: d.caption.trim() || null,
+        ...(asset.external_url ? { external_url: d.external_url.trim() } : {}),
       });
       toast('Saved.');
     } catch (e) { toastError(e); }
@@ -82,6 +83,7 @@ function InfoForm({ asset }) {
     <h3>Details</h3>
     <div class="form-grid">
       <${Field} label="Title" wide><input value=${d.title} onInput=${set('title')} /><//>
+      ${asset.external_url && html`<${Field} label="Link" wide><input type="url" value=${d.external_url} onInput=${set('external_url')} /><//>`}
       <${Field} label="File under">
         <select value=${d.category} onChange=${set('category')}>${CATEGORIES.map((c) => html`<option value=${c.id}>${c.label}</option>`)}</select>
       <//>
@@ -139,13 +141,14 @@ export function AssetDetail({ id }) {
 
   const share = async () => {
     try {
+      if (asset.external_url) { await copyText(asset.external_url); return toast('Link copied.'); }
       const url = await api.shareUrl(asset.storage_path, 7);
       await copyText(url);
       toast(api.shareNote || 'Share link copied — it works for 7 days.');
     } catch (e) { toastError(e); }
   };
   const remove = async () => {
-    if (!(await confirmDialog({ title: 'Delete this item?', message: `“${asset.title}” and its file will be permanently deleted.`, confirmLabel: 'Delete', danger: true }))) return;
+    if (!(await confirmDialog({ title: 'Delete this item?', message: asset.external_url ? `“${asset.title}” is removed from the library (the link itself isn't affected).` : `“${asset.title}” and its file will be permanently deleted.`, confirmLabel: 'Delete', danger: true }))) return;
     try { await deleteAssets([asset]); toast('Deleted.'); closeAsset(); } catch (e) { toastError(e); }
   };
 
@@ -154,15 +157,18 @@ export function AssetDetail({ id }) {
       <div class="detail-media">
         <${MediaPreview} key=${asset.id} asset=${asset} />
         <div class="detail-actions">
-          <button class="btn btn-primary" onClick=${() => downloadAsset(asset)}><${Icon} name="download" size=${16} />Download</button>
-          <button class="btn" onClick=${share}><${Icon} name="link" size=${16} />Copy share link</button>
+          <button class="btn btn-primary" onClick=${() => downloadAsset(asset)}><${Icon} name=${asset.external_url ? 'external' : 'download'} size=${16} />${asset.external_url ? 'Open link' : 'Download'}</button>
+          <button class="btn" onClick=${share}><${Icon} name="link" size=${16} />${asset.external_url ? 'Copy link' : 'Copy share link'}</button>
           ${api.media?.(asset)?.open && html`<a class="btn btn-ghost" href=${api.media(asset).open} target="_blank" rel="noopener"><${Icon} name="external" size=${16} />Open in Drive</a>`}
           <span class="spacer"></span>
           <button class="btn btn-ghost-danger" onClick=${remove}><${Icon} name="trash" size=${16} />Delete</button>
         </div>
         <dl class="facts">
-          <dt>Type</dt><dd>${MEDIA[asset.media_type]?.label} · ${fmtBytes(asset.size_bytes)}</dd>
-          <dt>File</dt><dd class="break">${asset.file_name || '—'}</dd>
+          ${asset.external_url
+            ? html`<dt>Type</dt><dd>${MEDIA[asset.media_type]?.label} link</dd>
+              <dt>Link</dt><dd class="break"><a class="link" href=${asset.external_url} target="_blank" rel="noopener noreferrer">${asset.external_url}</a></dd>`
+            : html`<dt>Type</dt><dd>${MEDIA[asset.media_type]?.label} · ${fmtBytes(asset.size_bytes)}</dd>
+              <dt>File</dt><dd class="break">${asset.file_name || '—'}</dd>`}
           <dt>Uploaded</dt><dd>${fmtDate(asset.created_at)} by ${asset.uploaded_by || '—'}</dd>
           <dt>Source</dt><dd>${asset.source === 'talent' ? 'Creator upload link' : 'Team upload'}</dd>
           ${asset.caption && html`<dt>Caption</dt><dd class="caption-text">${asset.caption}</dd>`}

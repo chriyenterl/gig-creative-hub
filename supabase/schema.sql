@@ -127,6 +127,8 @@ create table if not exists public.assets (
 -- Library items: a video's cover photo and an optional caption.
 alter table public.assets add column if not exists cover_path text;
 alter table public.assets add column if not exists caption    text;
+alter table public.assets add column if not exists external_url text; -- a link (Drive, Dropbox…) instead of a file
+alter table public.assets alter column storage_path drop not null;
 
 create index if not exists assets_season_idx  on public.assets (season_id);
 create index if not exists assets_status_idx  on public.assets (status);

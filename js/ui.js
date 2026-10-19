@@ -207,16 +207,21 @@ export function MediaThumb({ asset, url }) {
   // A video's cover photo is used as its thumbnail. Images use the browser's own lazy loading;
   // videos without a cover wait until scrolled into view (they're heavier).
   if (cover && !broken) inner = html`<img src=${cover} alt="" loading="lazy" decoding="async" onError=${() => setBroken(true)} />`;
+  else if (asset.external_url) inner = html`<div class="thumb-ph"><${Icon} name="link" size=${26} /><span>${linkHost(asset.external_url)}</span></div>`;
   else if (url && !broken && (kind === 'image' || direct)) inner = html`<img src=${url} alt="" loading="lazy" decoding="async" onError=${() => setBroken(true)} />`;
   else if (show && kind === 'video') inner = html`<video src=${url + '#t=0.5'} preload="metadata" muted playsinline onError=${() => setBroken(true)}></video>`;
   else inner = html`<div class="thumb-ph"><${Icon} name=${MEDIA[kind]?.icon || 'file'} size=${26} /><span>${extOf(asset)}</span></div>`;
   return html`<div class="thumb" ref=${ref}>
     ${inner}
-    ${kind === 'video' && html`<span class="thumb-badge"><${Icon} name="play" size=${11} /> Video</span>`}
+    ${asset.external_url ? html`<span class="thumb-badge"><${Icon} name="link" size=${11} /> ${kind === 'video' ? 'Video link' : 'Link'}</span>`
+      : kind === 'video' && html`<span class="thumb-badge"><${Icon} name="play" size=${11} /> Video</span>`}
   </div>`;
 }
 
+export const linkHost = (url) => { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return 'Link'; } };
+
 export function MediaPreview({ asset }) {
+  if (asset.external_url) return html`<${LinkPreview} asset=${asset} />`;
   const direct = api?.media?.(asset);
   const urls = useSignedUrls(direct ? [] : [asset.storage_path, asset.cover_path].filter(Boolean));
   const url = urls[asset.storage_path];
@@ -234,7 +239,22 @@ export function MediaPreview({ asset }) {
   </div></div>`;
 }
 
+// A library item that's a link (Google Drive, Dropbox, WeTransfer…) instead of an uploaded file.
+function LinkPreview({ asset }) {
+  const urls = useSignedUrls(asset.cover_path ? [asset.cover_path] : []);
+  const cover = asset.cover_path ? urls[asset.cover_path] : null;
+  return html`<div class="preview link-preview">
+    ${cover && html`<img src=${cover} alt=${asset.title} />`}
+    <div class="link-card">
+      <${Icon} name="link" size=${22} />
+      <div><b>${linkHost(asset.external_url)}</b><span class="muted small break">${asset.external_url}</span></div>
+      <a class="btn btn-primary" href=${asset.external_url} target="_blank" rel="noopener noreferrer"><${Icon} name="external" size=${16} />Open link</a>
+    </div>
+  </div>`;
+}
+
 export async function downloadAsset(asset) {
+  if (asset.external_url) return void window.open(asset.external_url, '_blank', 'noopener');
   try {
     const url = await api.downloadUrl(asset.storage_path, asset.file_name);
     const a = Object.assign(document.createElement('a'), { href: url, download: asset.file_name || '' });
@@ -302,6 +322,7 @@ export function Dropzone({ onFiles, multiple = true, accept, children }) {
     <input ref=${input} type="file" hidden multiple=${multiple} accept=${accept}
       onChange=${(e) => { onFiles([...e.target.files]); e.target.value = ''; }} />
     ${children}
+    ${isIPhone() && html`<span class="ios-tip">iPhone: tap <b>Choose File</b> (not Photo Library) to send the full-quality original.</span>`}
   </div>`;
 }
 

@@ -1,8 +1,12 @@
-// Team upload: add files to the library (brand kit, raw footage, final content).
+// Team upload: add files to the library (brand kit, raw footage, final content) — or add a link
+// (Google Drive, Dropbox, WeTransfer…) instead of uploading.
 import { html, useState, useEffect } from '../lib.js';
 import { api, insertRow, getState, useStore, refreshStorage } from '../store.js';
 import { CATEGORIES, mediaTypeFor, safeName, stripExt, uid, parseTags, fmtBytes, MEDIA } from '../util.js';
-import { Icon, Modal, Dropzone, Progress, Field, SeasonSelect, TalentSelect, StorageWarning, CoverPicker, toast } from '../ui.js';
+import { Icon, Modal, Dropzone, Progress, Field, SeasonSelect, TalentSelect, StorageWarning, CoverPicker, Tabs, toast, toastError } from '../ui.js';
+import { normalizeLink } from '../print/model.js';
+
+const LINK_KINDS = [['video', 'Video'], ['image', 'Photo'], ['document', 'Document'], ['other', 'Other']];
 
 export function UploadDialog({ onClose, defaults = {} }) {
   const [items, setItems] = useState([]); // { id, file, title, progress, state, error }
@@ -14,6 +18,9 @@ export function UploadDialog({ onClose, defaults = {} }) {
     status: 'approved',
   });
   const [running, setRunning] = useState(false);
+  const [mode, setMode] = useState('files'); // 'files' | 'link'
+  const [link, setLink] = useState({ url: '', title: '', kind: 'video', caption: '', cover: null });
+  const setL = (k) => (v) => setLink((x) => ({ ...x, [k]: v?.target ? v.target.value : v }));
   const { storage } = useStore();
   const patchItem = (id, p) => setItems((xs) => xs.map((x) => (x.id === id ? { ...x, ...p } : x)));
   const setM = (k) => (v) => setMeta((m) => ({ ...m, [k]: v?.target ? v.target.value : v }));
@@ -79,8 +86,39 @@ export function UploadDialog({ onClose, defaults = {} }) {
     return () => clearTimeout(t);
   }, [allDone, running]);
 
-  return html`<${Modal} title="Upload to the library" size="lg" onClose=${() => !running && onClose()}
-    footer=${html`
+  // Add a link instead of a file: no upload, no storage used, nothing compressed.
+  const addLink = async () => {
+    const url = normalizeLink(link.url);
+    if (!url) return toastError(new Error("Paste the whole link (it usually starts with https://)."));
+    setRunning(true);
+    let cover = null;
+    try {
+      if (link.cover && link.kind === 'video') {
+        const coverPath = `library/${meta.category}/${uid()}-cover-${safeName(link.cover.name)}`;
+        cover = await api.uploadFile(coverPath, link.cover, { category: meta.category }) || coverPath;
+      }
+      await insertRow('assets', {
+        title: link.title.trim() || url.replace(/^https?:\/\//, '').slice(0, 80), category: meta.category, media_type: link.kind,
+        season_id: meta.season_id || null, talent_id: meta.talent_id || null, source: 'team', external_url: url, storage_path: null,
+        cover_path: cover, caption: link.caption.trim() || null, tags: parseTags(meta.tags), status: meta.status,
+        reviewed_at: meta.status === 'approved' ? new Date().toISOString() : null, uploaded_by: getState().user?.email || getState().user?.name || null,
+      });
+      toast('Link added to the library.');
+      onClose();
+    } catch (e) {
+      if (cover) api.removeFiles([cover]).catch(() => {});
+      toastError(e);
+      setRunning(false);
+    }
+  };
+
+  return html`<${Modal} title="Add to the library" size="lg" onClose=${() => !running && onClose()}
+    footer=${mode === 'link' ? html`
+      <span class="muted small">A link uses no storage and is never compressed.</span>
+      <span class="spacer"></span>
+      <button class="btn" disabled=${running} onClick=${onClose}>Cancel</button>
+      <button class="btn btn-primary" disabled=${running || !link.url.trim()} onClick=${addLink}>
+        <${Icon} name="link" size=${16} />${running ? 'Adding…' : 'Add link'}</button>` : html`
       <span class="muted small">${items.length ? `${done} of ${items.length} uploaded` : ''}</span>
       <span class="spacer"></span>
       <button class="btn" disabled=${running} onClick=${onClose}>Cancel</button>
@@ -107,9 +145,22 @@ export function UploadDialog({ onClose, defaults = {} }) {
       <//>
     </div>
 
+    <div class="upload-mode"><${Tabs} value=${mode} onChange=${(m) => !running && setMode(m)}
+      items=${[{ id: 'files', label: 'Upload from Files' }, { id: 'link', label: 'Add a link' }]} /></div>
+
+    ${mode === 'link' ? html`<div class="form-grid">
+      <${Field} label="Link" hint="Google Drive, Dropbox, WeTransfer, YouTube… make sure anyone with the link can open it" wide>
+        <input type="url" inputmode="url" placeholder="https://…" value=${link.url} onInput=${setL('url')} autocomplete="off" /><//>
+      <${Field} label="Title" wide><input value=${link.title} onInput=${setL('title')} placeholder="e.g. Raya campaign — full video" /><//>
+      <${Field} label="It's a">
+        <select value=${link.kind} onChange=${setL('kind')}>${LINK_KINDS.map(([id, label]) => html`<option value=${id}>${label}</option>`)}</select><//>
+      <${Field} label="Caption (optional)" wide><textarea rows="2" value=${link.caption} onInput=${setL('caption')} placeholder="e.g. the post text"></textarea><//>
+      ${link.kind === 'video' && html`<div class="field field-wide"><span class="field-label">Cover photo (optional)</span>
+        <${CoverPicker} file=${link.cover} disabled=${running} onPick=${(f) => setL('cover')(f)} onRemove=${() => setL('cover')(null)} /></div>`}
+    </div>` : html`
     <${Dropzone} onFiles=${addFiles}>
       <${Icon} name="upload" size=${28} />
-      <b>Drop files here or click to choose</b>
+      <b>Choose from Files, or drop files here</b>
       <span class="muted small">Photos, videos, logos, PDFs — any file type</span>
     <//>
 
@@ -131,6 +182,6 @@ export function UploadDialog({ onClose, defaults = {} }) {
           : it.state === 'uploading' ? html`<span class="muted small">${Math.round(it.progress * 100)}%</span>`
           : html`<button class="icon-btn" aria-label="Remove" onClick=${() => setItems((xs) => xs.filter((x) => x.id !== it.id))}><${Icon} name="x" size=${16} /></button>`}
       </li>`)}
-    </ul>`}
+    </ul>`}`}
   <//>`;
 }

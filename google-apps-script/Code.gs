@@ -39,7 +39,7 @@ var SCHEMA = {
                   num: ['upload_count'], bool: ['is_active'] },
   assets:       { cols: ['id', 'title', 'description', 'category', 'media_type', 'season_id', 'talent_id', 'upload_link_id',
                          'source', 'storage_path', 'file_name', 'mime_type', 'size_bytes', 'tags', 'status', 'review_note',
-                         'reviewed_at', 'use_count', 'last_used_on', 'uploaded_by', 'cover_path', 'caption', 'created_at', 'updated_at'],
+                         'reviewed_at', 'use_count', 'last_used_on', 'uploaded_by', 'cover_path', 'caption', 'external_url', 'created_at', 'updated_at'],
                   num: ['size_bytes', 'use_count'], arr: ['tags'] },
   asset_usage:  { cols: ['id', 'asset_id', 'channel', 'note', 'used_on', 'created_by', 'created_at'] },
   print_orders: { cols: ['id', 'order_no', 'status', 'customer_name', 'company', 'phone', 'email', 'summary', 'quantity',
@@ -332,7 +332,11 @@ function apiInsert_(name, row, me) {
   if (name === 'seasons' && readTable_('seasons').rows.some(function (s) {
     return String(s.name).toLowerCase() === String(row.name || '').toLowerCase();
   })) fail_('That already exists.');
-  if (name === 'assets') {
+  if (name === 'assets' && row.external_url) { // a link instead of an uploaded file
+    if (!/^https?:\/\//i.test(row.external_url)) row.external_url = 'https://' + String(row.external_url).trim();
+    if (!/^https?:\/\/[^\s\/]+\.[^\s]+$/i.test(row.external_url)) fail_("That link doesn't look right.");
+    row.storage_path = null;
+  } else if (name === 'assets') {
     if (!row.storage_path) fail_('Missing file.');
     shareFile_(row.storage_path, ['final', 'raw', 'brand'].map(function (k) { return folder_(k).getId(); }));
     if (row.cover_path) shareFile_(row.cover_path, ['final', 'raw', 'brand'].map(function (k) { return folder_(k).getId(); }));
@@ -604,6 +608,19 @@ function mediaTypeFor_(mime) {
 function linkSubmit_(req) {
   var l = activeLink_(req.linkToken);
   if (!l) fail_('This upload link is no longer active. Please contact the team.');
+  if (req.externalUrl && !req.fileId) { // a link instead of a file
+    var url = String(req.externalUrl).trim();
+    if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+    if (!/^https?:\/\/[^\s\/]+\.[^\s]+$/i.test(url)) fail_("That link doesn't look right.");
+    var la = insertRow_('assets', {
+      title: String(req.title || '').trim() || 'Link from ' + l.label, description: String(req.description || '').trim() || null,
+      category: 'final', media_type: ['video', 'image', 'document', 'other'].indexOf(req.mediaType) >= 0 ? req.mediaType : 'other',
+      season_id: l.season_id, talent_id: l.talent_id, upload_link_id: l.id, source: 'talent', external_url: url,
+      status: 'pending', uploaded_by: l.label, cover_path: req.coverId || null, caption: String(req.caption || '').trim().slice(0, 5000) || null,
+    });
+    updateRow_('upload_links', l.id, { upload_count: (Number(l.upload_count) || 0) + 1, last_upload_at: new Date().toISOString() });
+    return la.id;
+  }
   if (!l.folder_id) fail_('Invalid upload.');
   if (readTable_('assets').rows.some(function (a) { return a.storage_path === req.fileId; })) fail_('This file was already sent.');
   var file = shareFile_(req.fileId, [l.folder_id]);

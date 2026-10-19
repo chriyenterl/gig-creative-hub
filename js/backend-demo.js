@@ -2,7 +2,7 @@
 // browser (localStorage for data, IndexedDB for uploaded files). Used when
 // config.js has no Supabase details, so you can click around before setting up.
 import { uid, newToken, today, fmtGB } from './util.js';
-import { DEFAULT_QUESTIONS, DEFAULT_READY_MESSAGE, DEFAULT_NEW_MESSAGE, notifyPayload, isVisible } from './print/model.js';
+import { DEFAULT_QUESTIONS, DEFAULT_READY_MESSAGE, DEFAULT_NEW_MESSAGE, notifyPayload, isVisible, isBlank, normalizeLink } from './print/model.js';
 
 const KEY = 'mediahub-demo-v1';
 const USER = { email: 'you@demo.team' };
@@ -521,8 +521,11 @@ export function createDemoBackend() {
           }
           let v = q.type === 'file' ? filesIn[q.id] || [] : answersIn[q.id];
           if (typeof v === 'string') v = v.trim();
+          if (q.type === 'link' && v) { const link = normalizeLink(v); if (!link) throw new Error('Please check the link for: ' + q.label); v = link; }
           const empty = v == null || v === '' || (Array.isArray(v) && !v.length);
-          if (strict && q.required && empty) throw new Error('Please answer: ' + q.label);
+          const other = q.eitherWith && d.questions.find((x) => x.id === q.eitherWith); // e.g. a design file OR a link
+          const otherDone = other && isVisible(other, answersIn, d.questions) && !isBlank(other.type === 'file' ? filesIn[other.id] : answersIn[other.id]);
+          if (strict && q.required && empty && !otherDone) throw new Error('Please answer: ' + q.label + (other ? ' (or ' + other.label + ')' : ''));
           if (strict && q.type === 'date' && !empty && String(v) < new Date(Date.now() - 86400e3).toISOString().slice(0, 10)) throw new Error('Please choose today or a future date for: ' + q.label);
           if (q.role && roleCol[q.role] && !empty) row[roleCol[q.role]] = Array.isArray(v) ? v.join(', ') : String(v);
           return { id: q.id, label: q.label, type: q.type, value: empty ? null : v };

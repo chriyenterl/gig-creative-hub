@@ -204,8 +204,9 @@ export function QuestionField({ q, value, onChange, error, files, onFiles, onRem
   else if (q.type === 'select') input = html`<select ...${common} value=${value || ''} onChange=${(e) => onChange(e.target.value)}>
       <option value="">Choose…</option>${(q.options || []).map((o) => html`<option value=${o}>${o}</option>`)}</select>`;
   else {
-    const type = { number: 'number', email: 'email', phone: 'tel', date: 'date' }[q.type] || 'text';
-    input = html`<input ...${common} type=${type} inputmode=${q.type === 'number' ? 'decimal' : undefined} min=${q.type === 'number' ? '0' : undefined}
+    const type = { number: 'number', email: 'email', phone: 'tel', date: 'date', link: 'url' }[q.type] || 'text';
+    input = html`<input ...${common} type=${type} inputmode=${q.type === 'number' ? 'decimal' : q.type === 'link' ? 'url' : undefined}
+      min=${q.type === 'number' ? '0' : undefined} placeholder=${q.type === 'link' ? 'https://…' : undefined} autocomplete=${q.type === 'link' ? 'off' : undefined}
       value=${value || ''} onInput=${(e) => onChange(e.target.value)} />`;
   }
   return html`<label class=${'field q-field' + (error ? ' has-error' : '')} for=${id}>${label}${help}${input}${err}</label>`;

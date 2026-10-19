@@ -189,9 +189,9 @@ The customer link can be changed or disabled; the master link can be changed. A 
 
 **Order form:** **Order form** page (master). The default form asks: name, company, phone/WhatsApp, what to print, quantity,
 **size**, **paper type** (hard card / normal / not sure), **lamination** (only shown when the item isn't stickers or a banner),
-**do you have a design ready?** — *Yes* shows a design upload, *No* shows a box to describe the design **or record a voice note
+**do you have a design ready?** — *Yes* shows a design upload **or a box to paste a link** (Google Drive, Canva, Dropbox…; either one is enough), *No* shows a box to describe the design **or record a voice note
 (up to 5 minutes)** — then the due date and any notes. You can add, remove, reorder and edit questions: short answer, paragraph,
-number, email, phone, date, dropdown, buttons, checkboxes, file upload, or text-or-voice-note; mark them required; set
+number, email, phone, date, dropdown, buttons, checkboxes, file upload, link (web address), or text-or-voice-note; mark them required; set
 **"Only show this question when…"** another answer is (or isn't) one of the choices you pick; and choose "Show in order list as"
 (customer name, company, phone, email, what they ordered, quantity, due date). Changes only affect new orders.
 Voice notes play right inside the order page (and are saved with the artwork).

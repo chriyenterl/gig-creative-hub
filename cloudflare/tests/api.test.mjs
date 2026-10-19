@@ -167,7 +167,7 @@ ok(aliMe.role === 'admin' && aliMe.name === 'Ali (production)' && !aliMe.setting
 ok(!!(await data('printMe', { token: T })).staff.find((x) => x.id === ALI.id).last_used_at, 'last opened time recorded');
 const ADMIN = ALI.key;
 const form = await data('printForm', { orderKey: S.orderKey });
-ok(form.questions.length === 13, 'customer form has the 13 default questions');
+ok(form.questions.length === 14 && form.questions.some((q) => q.id === 'q_design_link' && q.type === 'link'), 'customer form has 14 questions, including the design link');
 ok((await data('printForm', { orderKey: 'nope' })) === null, 'wrong order link shows nothing');
 const art = rand(1500 * 1024);
 const ak = await upload('printStartUpload', { orderKey: S.orderKey }, art, 'application/pdf', 'artwork.pdf');
@@ -188,6 +188,12 @@ ok(orders.length === 2 && ord.customer_name === 'Jason Lim' && ord.summary === '
 ok(ord.answers.find((a) => a.id === 'q_lamination').hidden === true, 'lamination hidden for stickers (conditional question)');
 ok(ord.answers.find((a) => a.id === 'q_design_brief').hidden === true, 'design brief hidden when a design is attached');
 ok(orders.find((o) => o.order_no === 'P-1002').answers.find((a) => a.id === 'q_design_brief').value.text === 'A red logo', 'text design brief saved');
+const linkOnly = await data('printSubmit', { orderKey: S.orderKey, answers: { ...answers, q_design_link: '  canva.com/design/ABC123/view ' }, files: {} });
+const lo = (await data('printOrders', { printKey: ADMIN })).find((o) => o.order_no === linkOnly.order_no);
+ok(lo.answers.find((a) => a.id === 'q_design_link').value === 'https://canva.com/design/ABC123/view', 'a design link alone is enough (https:// added)');
+ok((await api('printSubmit', { orderKey: S.orderKey, answers, files: {} })).ok === false, 'design "Yes" needs a file or a link');
+ok((await api('printSubmit', { orderKey: S.orderKey, answers: { ...answers, q_design_link: 'not a link' }, files: {} })).ok === false, 'a broken link is refused');
+ok(ord.answers.find((a) => a.id === 'q_design_link').value === null, 'file only: the link stays empty');
 const done = await data('printUpdate', { printKey: ADMIN, id: ord.id, patch: { status: 'completed', internal_notes: 'Printed on matte' } });
 ok(done.status === 'completed' && done.internal_notes === 'Printed on matte' && done.history.length === 2, 'admin completes an order (no bot = no notify entry)', done.history);
 ok(done.history.at(-1).by === 'Ali (production)', 'history says who did it', done.history.at(-1));
@@ -202,7 +208,8 @@ const tn = await data('printTestNotify', { printKey: S.masterKey, kind: 'created
 ok(tn.ok === false && /Could not reach|took too long/.test(tn.detail), 'bot test reports an unreachable bot', tn);
 ok((await api('printTestTeamEmail', { printKey: S.masterKey })).ok === false, 'team email alerts are gone');
 const qs = await data('printSaveQuestions', { printKey: S.masterKey, questions: [...form.questions, { label: 'Colour?', type: 'radio', options: ['Full colour', 'B/W'] }] });
-ok(qs.length === 14 && qs[13].id.startsWith('q_'), 'master edits the form');
+ok(qs.length === 15 && qs[14].id.startsWith('q_'), 'master edits the form');
+ok(qs.find((q) => q.id === 'q_design_file').eitherWith === 'q_design_link', 'editing the form keeps the "file or link" rule');
 ok((await api('printStaffAdd', { printKey: ADMIN, name: 'Sneaky' })).ok === false, 'staff cannot make links');
 await data('printStaffUpdate', { printKey: S.masterKey, id: MEI.id, patch: { active: false } });
 ok((await api('printOrders', { printKey: MEI.key })).code === 'PRINT_AUTH' && (await api('printOrders', { printKey: ADMIN })).ok, "turning off Mei's link doesn't affect Ali");

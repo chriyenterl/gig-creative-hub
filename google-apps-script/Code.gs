@@ -656,8 +656,10 @@ var DEFAULT_PRINT_QUESTIONS = [
   { id: 'q_lamination', label: 'Do you want plastic lamination?', type: 'radio', required: true, options: ['Yes', 'No'],
     showIf: NOT_STICKER_OR_BANNER },
   { id: 'q_design', label: 'Do you have a design ready?', type: 'radio', required: true, options: ['Yes', 'No'] },
-  { id: 'q_design_file', label: 'Upload your design', type: 'file', required: true, help: 'PDF, AI, PSD, PNG or JPG',
-    showIf: { q: 'q_design', op: 'in', values: ['Yes'] } },
+  { id: 'q_design_file', label: 'Upload your design', type: 'file', required: true, eitherWith: 'q_design_link',
+    help: 'PDF, AI, PSD, PNG or JPG — or paste a link below instead', showIf: { q: 'q_design', op: 'in', values: ['Yes'] } },
+  { id: 'q_design_link', label: 'Or paste a link to your design', type: 'link',
+    help: 'Google Drive, Canva, Dropbox… make sure anyone with the link can open it.', showIf: { q: 'q_design', op: 'in', values: ['Yes'] } },
   { id: 'q_design_brief', label: 'Tell us what design you want', type: 'voice_text', required: true,
     help: 'Type it below, or record a voice note (up to 5 minutes).', showIf: { q: 'q_design', op: 'in', values: ['No'] } },
   { id: 'q_due', label: 'When do you need it?', type: 'date', required: true, role: 'deadline' },
@@ -853,8 +855,15 @@ function printSubmit_(req) {
     }
     var v = q.type === 'file' ? (filesIn[q.id] || []) : answersIn[q.id];
     if (typeof v === 'string') v = v.trim().slice(0, 5000);
+    if (q.type === 'link' && v) { // a web link: add https:// if missing
+      if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(v)) v = 'https://' + v;
+      if (!/^https?:\/\/[^\s\/]+\.[^\s]+$/i.test(v)) fail_('Please check the link for: ' + q.label);
+    }
     var empty = v === undefined || v === null || v === '' || (Array.isArray(v) && !v.length);
-    if (q.required && empty) fail_('Please answer: ' + q.label);
+    var other = q.eitherWith && questions.filter(function (x) { return x.id === q.eitherWith; })[0]; // e.g. a design file OR a link
+    var ov = other ? (other.type === 'file' ? filesIn[other.id] : answersIn[other.id]) : null;
+    var otherDone = other && isVisible_(other, answersIn, questions) && !(ov == null || String(ov).trim() === '' || (Array.isArray(ov) && !ov.length));
+    if (q.required && empty && !otherDone) fail_('Please answer: ' + q.label + (other ? ' (or ' + other.label + ')' : ''));
     if (q.type === 'date' && !empty && String(v) < earliestDate_()) fail_('Please choose today or a future date for: ' + q.label);
     if (q.type === 'file' && !empty) v = cleanFiles(v);
     answers.push({ id: q.id, label: q.label, type: q.type, value: empty ? null : v });
@@ -919,7 +928,7 @@ function printDelete_(id) {
 
 function printSaveQuestions_(questions) {
   if (!Array.isArray(questions) || !questions.length) fail_('The form needs at least one question.');
-  var types = ['text', 'textarea', 'number', 'email', 'phone', 'date', 'select', 'radio', 'checkbox', 'file', 'voice_text'];
+  var types = ['text', 'textarea', 'number', 'email', 'phone', 'date', 'select', 'radio', 'checkbox', 'file', 'link', 'voice_text'];
   var clean = questions.map(function (q) {
     if (!q.label || !String(q.label).trim()) fail_('Every question needs a label.');
     return {
@@ -929,8 +938,11 @@ function printSaveQuestions_(questions) {
       options: Array.isArray(q.options) ? q.options.map(String).filter(String).slice(0, 50) : [],
       showIf: q.showIf && q.showIf.q ? { q: String(q.showIf.q), op: q.showIf.op === 'not_in' ? 'not_in' : 'in',
         values: (q.showIf.values || []).map(String).slice(0, 50) } : null,
+      eitherWith: q.eitherWith ? String(q.eitherWith) : null,
     };
   });
+  var ids = clean.map(function (q) { return q.id; });
+  clean.forEach(function (q) { if (ids.indexOf(q.eitherWith) < 0 || q.eitherWith === q.id) q.eitherWith = null; });
   var text = JSON.stringify(clean);
   if (text.length > 8500) fail_('The form is too long to save. Try shorter help texts or fewer options.');
   PropertiesService.getScriptProperties().setProperty('PRINT_QUESTIONS', text);

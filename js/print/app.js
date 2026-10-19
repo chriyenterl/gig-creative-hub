@@ -376,7 +376,8 @@ function OrderDetail({ id }) {
       <section class="card">
         <header class="card-head"><h2>Order details</h2></header>
         <dl class="answers">
-          ${(o.answers || []).filter((a) => !a.hidden && a.type !== 'file' && a.type !== 'voice_text').map((a) => html`<div key=${a.id}><dt>${a.label}</dt><dd>${answerText(a)}</dd></div>`)}
+          ${(o.answers || []).filter((a) => !a.hidden && a.type !== 'file' && a.type !== 'voice_text').map((a) => html`<div key=${a.id}><dt>${a.label}</dt>
+            <dd>${a.type === 'link' && a.value ? html`<a class="link break" href=${a.value} target="_blank" rel="noopener noreferrer">${a.value}</a>` : answerText(a)}</dd></div>`)}
         </dl>
         ${(o.answers || []).filter((a) => !a.hidden && a.type === 'voice_text').map((a) => html`<div key=${a.id} class="answers-files">
           <h3>${a.label}</h3>

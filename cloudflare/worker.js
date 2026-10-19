@@ -1044,8 +1044,10 @@ const DEFAULT_PRINT_QUESTIONS = [
   { id: 'q_lamination', label: 'Do you want plastic lamination?', type: 'radio', required: true, options: ['Yes', 'No'],
     showIf: NOT_STICKER_OR_BANNER },
   { id: 'q_design', label: 'Do you have a design ready?', type: 'radio', required: true, options: ['Yes', 'No'] },
-  { id: 'q_design_file', label: 'Upload your design', type: 'file', required: true, help: 'PDF, AI, PSD, PNG or JPG',
-    showIf: { q: 'q_design', op: 'in', values: ['Yes'] } },
+  { id: 'q_design_file', label: 'Upload your design', type: 'file', required: true, eitherWith: 'q_design_link',
+    help: 'PDF, AI, PSD, PNG or JPG — or paste a link below instead', showIf: { q: 'q_design', op: 'in', values: ['Yes'] } },
+  { id: 'q_design_link', label: 'Or paste a link to your design', type: 'link',
+    help: 'Google Drive, Canva, Dropbox… make sure anyone with the link can open it.', showIf: { q: 'q_design', op: 'in', values: ['Yes'] } },
   { id: 'q_design_brief', label: 'Tell us what design you want', type: 'voice_text', required: true,
     help: 'Type it below, or record a voice note (up to 5 minutes).', showIf: { q: 'q_design', op: 'in', values: ['No'] } },
   { id: 'q_due', label: 'When do you need it?', type: 'date', required: true, role: 'deadline' },
@@ -1255,6 +1257,13 @@ async function printMe(actor) {
   return out;
 }
 
+const blank = (v) => v == null || (typeof v === 'string' ? !v.trim() : Array.isArray(v) && !v.length);
+function cleanLink(v) {
+  let s = String(v || '').trim();
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) s = 'https://' + s;
+  try { const u = new URL(s); return /^https?:$/.test(u.protocol) && u.hostname.includes('.') && !/\s/.test(s) ? u.href.slice(0, 2000) : null; } catch { return null; }
+}
+
 // Dates can't be in the past (one day of leeway for time-zone differences).
 const earliestDate = () => new Date(Date.now() - 86400000).toISOString().slice(0, 10);
 
@@ -1291,8 +1300,16 @@ async function createOrder(answersIn, filesIn, { strict, by, status = 'new', not
     }
     let v = q.type === 'file' ? (filesIn[q.id] || []) : answersIn[q.id];
     if (typeof v === 'string') v = v.trim().slice(0, 5000);
+    if (q.type === 'link' && v) { // a web link: add https:// if missing, refuse anything else
+      const link = cleanLink(v);
+      if (!link) fail('Please check the link for: ' + q.label);
+      v = link;
+    }
     const empty = v === undefined || v === null || v === '' || (Array.isArray(v) && !v.length);
-    if (strict && q.required && empty) fail('Please answer: ' + q.label);
+    // eitherWith: also answered when that other question is (e.g. a design file OR a link)
+    const other = q.eitherWith && questions.find((x) => x.id === q.eitherWith);
+    const otherDone = other && isVisible(other, answersIn, questions) && !blank(other.type === 'file' ? filesIn[other.id] : answersIn[other.id]);
+    if (strict && q.required && empty && !otherDone) fail('Please answer: ' + q.label + (other ? ' (or ' + other.label + ')' : ''));
     if (strict && q.type === 'date' && !empty && String(v) < earliestDate()) fail('Please choose today or a future date for: ' + q.label);
     if (q.type === 'file' && !empty) v = await cleanFiles(v);
     answers.push({ id: q.id, label: q.label, type: q.type, value: empty ? null : v });
@@ -1357,7 +1374,7 @@ async function printDelete(id) {
 
 async function printSaveQuestions(questions) {
   if (!Array.isArray(questions) || !questions.length) fail('The form needs at least one question.');
-  const types = ['text', 'textarea', 'number', 'email', 'phone', 'date', 'select', 'radio', 'checkbox', 'file', 'voice_text'];
+  const types = ['text', 'textarea', 'number', 'email', 'phone', 'date', 'select', 'radio', 'checkbox', 'file', 'link', 'voice_text'];
   const cleaned = questions.slice(0, 100).map((q) => {
     if (!q.label || !String(q.label).trim()) fail('Every question needs a label.');
     return {
@@ -1367,8 +1384,11 @@ async function printSaveQuestions(questions) {
       options: Array.isArray(q.options) ? q.options.map(String).filter(Boolean).slice(0, 50) : [],
       showIf: q.showIf && q.showIf.q ? { q: String(q.showIf.q), op: q.showIf.op === 'not_in' ? 'not_in' : 'in',
         values: (q.showIf.values || []).map(String).slice(0, 50) } : null,
+      eitherWith: q.eitherWith ? String(q.eitherWith) : null,
     };
   });
+  const ids = new Set(cleaned.map((q) => q.id));
+  cleaned.forEach((q) => { if (!ids.has(q.eitherWith) || q.eitherWith === q.id) q.eitherWith = null; });
   await setSetting('PRINT_QUESTIONS', JSON.stringify(cleaned));
   return cleaned;
 }

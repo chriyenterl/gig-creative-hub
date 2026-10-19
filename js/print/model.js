@@ -21,6 +21,7 @@ export const QUESTION_TYPES = [
   { id: 'radio',    label: 'Buttons (pick one)' },
   { id: 'checkbox', label: 'Checkboxes (pick any)' },
   { id: 'file',     label: 'File upload' },
+  { id: 'link',     label: 'Link (web address)' },
   { id: 'voice_text', label: 'Text or voice note (up to 5 min)' },
 ];
 export const hasOptions = (type) => ['select', 'radio', 'checkbox'].includes(type);
@@ -51,8 +52,10 @@ export const DEFAULT_QUESTIONS = [
   { id: 'q_lamination', label: 'Do you want plastic lamination?', type: 'radio', required: true, options: ['Yes', 'No'],
     showIf: NOT_STICKER_OR_BANNER },
   { id: 'q_design', label: 'Do you have a design ready?', type: 'radio', required: true, options: ['Yes', 'No'] },
-  { id: 'q_design_file', label: 'Upload your design', type: 'file', required: true, help: 'PDF, AI, PSD, PNG or JPG',
-    showIf: { q: 'q_design', op: 'in', values: ['Yes'] } },
+  { id: 'q_design_file', label: 'Upload your design', type: 'file', required: true, eitherWith: 'q_design_link',
+    help: 'PDF, AI, PSD, PNG or JPG — or paste a link below instead', showIf: { q: 'q_design', op: 'in', values: ['Yes'] } },
+  { id: 'q_design_link', label: 'Or paste a link to your design', type: 'link',
+    help: 'Google Drive, Canva, Dropbox… make sure anyone with the link can open it.', showIf: { q: 'q_design', op: 'in', values: ['Yes'] } },
   { id: 'q_design_brief', label: 'Tell us what design you want', type: 'voice_text', required: true,
     help: 'Type it below, or record a voice note (up to 5 minutes).', showIf: { q: 'q_design', op: 'in', values: ['No'] } },
   { id: 'q_due', label: 'When do you need it?', type: 'date', required: true, role: 'deadline' },
@@ -73,6 +76,20 @@ export function isVisible(q, answers, questions, seen = new Set()) {
   const hit = vals.some((x) => (c.values || []).includes(x));
   return c.op === 'not_in' ? !hit : hit;
 }
+
+// A web link typed by a customer: adds https:// if missing. Returns '' for empty, null if it isn't a link.
+export function normalizeLink(v) {
+  let s = String(v ?? '').trim();
+  if (!s) return '';
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) s = 'https://' + s;
+  try {
+    const u = new URL(s);
+    return /^https?:$/.test(u.protocol) && u.hostname.includes('.') && !/\s/.test(s) ? u.href : null;
+  } catch { return null; }
+}
+
+// `eitherWith`: a required question is also satisfied when that other question is answered (e.g. a design file OR a link).
+export const isBlank = (v) => v == null || (typeof v === 'string' ? !v.trim() : Array.isArray(v) && !v.length);
 
 export const newQuestionId = () => 'q_' + Math.random().toString(36).slice(2, 9);
 

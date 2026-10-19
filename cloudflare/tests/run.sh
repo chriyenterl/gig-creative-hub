@@ -12,7 +12,7 @@ run() { # run <test file> [extra wrangler args…]
   test="$1"; shift
   rm -rf .wrangler/test-state
   mkdir -p .wrangler
-  $W dev --ip 127.0.0.1 --port 8787 --persist-to .wrangler/test-state "$@" > .wrangler/test-server.log 2>&1 &
+  $W dev --ip 127.0.0.1 --port 8787 --persist-to .wrangler/test-state "$@" > ".wrangler/test-server-$test.log" 2>&1 &
   PID=$!
   i=0; until curl -s -m 2 http://127.0.0.1:8787/ > /dev/null 2>&1 || [ $i -ge 60 ]; do sleep 1; i=$((i + 1)); done
   echo "== $test"

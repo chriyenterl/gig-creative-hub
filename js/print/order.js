@@ -4,7 +4,7 @@ import { html, render, useState, useEffect } from '../lib.js';
 import { loadBackend } from '../api.js';
 import { CONFIG } from '../../config.js';
 import { Icon, ToastHost, toastError } from '../ui.js';
-import { QuestionField, answerText, isVisible } from './shared.js';
+import { QuestionField, answerText, isVisible, isBlank, normalizeLink } from './shared.js';
 
 const api = await loadBackend({ portal: true });
 const orderKey = decodeURIComponent(location.hash.replace(/^#/, '')).trim();
@@ -56,7 +56,12 @@ function OrderPage() {
         continue;
       }
       const v = q.type === 'file' ? files[q.id] : answers[q.id];
-      if (q.required && isEmpty(typeof v === 'string' ? v.trim() : v)) errs[q.id] = q.type === 'file' ? 'Please attach a file.' : 'Please fill this in.';
+      const other = q.eitherWith && visible.find((x) => x.id === q.eitherWith); // e.g. a design file OR a link
+      const otherDone = other && !isBlank(other.type === 'file' ? files[other.id] : answers[other.id]);
+      if (q.required && isEmpty(typeof v === 'string' ? v.trim() : v) && !otherDone) {
+        errs[q.id] = other ? `Please ${q.type === 'file' ? 'attach a file' : 'fill this in'} — or use “${other.label}”.` : q.type === 'file' ? 'Please attach a file.' : 'Please fill this in.';
+      }
+      else if (q.type === 'link' && v && !normalizeLink(v)) errs[q.id] = 'That link doesn\'t look right — copy the whole link (it usually starts with https://).';
       else if (q.type === 'email' && v && !/^\S+@\S+\.\S+$/.test(v)) errs[q.id] = 'That email doesn\'t look right.';
       else if (q.type === 'number' && v && Number.isNaN(Number(v))) errs[q.id] = 'Please enter a number.';
       else if (q.type === 'date' && v) {

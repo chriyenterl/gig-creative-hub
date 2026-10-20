@@ -986,3 +986,12 @@ select {
   .view-row .segmented-toggle button { flex: 1; justify-content: center; padding: 6px 8px; white-space: nowrap; }
   .sm-view .icon { display: none; }
 }
+
+/* ── Phones & tablets: no surprise zooming ─────────────────────────────── */
+/* iPhones zoom into any text box or menu smaller than 16px when it's tapped (and the page then slides
+   sideways), and zoom on a quick double-tap. 16px text and touch-action stop both; pinch-to-zoom still works. */
+html { touch-action: manipulation; }
+@media (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea { font-size: 16px !important; }
+  .passcode-input { font-size: 20px !important; }
+}

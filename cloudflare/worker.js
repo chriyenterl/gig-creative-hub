@@ -200,6 +200,12 @@ async function route(req, ctx) {
       await setSetting('STORAGE_LIMIT_GB', String(Math.round(gb * 10) / 10));
       return storageInfo();
     }
+    // Socmed Hub: everyone with Creative Hub access sees the overview; owners connect Buffer.
+    case 'socmedOverview': return socmedOverview(!!req.refresh);
+    case 'socmedSetup': ownersOnly('connect Buffer'); return socmedSetup();
+    case 'socmedConnect': ownersOnly('connect Buffer'); return socmedConnect(req);
+    case 'socmedRemove': ownersOnly('connect Buffer'); return socmedRemove(String(req.id || ''));
+    case 'socmedSaveChannels': ownersOnly('change Socmed Hub brands'); return socmedSaveChannels(req.channels);
   }
   fail('Unknown action: ' + a);
 }
@@ -1679,4 +1685,256 @@ async function pushNewOrder(o, except = null) {
   const waiting = (await DB.prepare("SELECT COUNT(*) AS n FROM print_orders WHERE status = 'new'").first()).n; // number on the app icon
   const data = { title: `New order ${o.order_no}`, body: [who, what, due ? 'due ' + due : ''].filter(Boolean).join(' — '), orderId: o.id, tag: o.id, at: Date.now(), badge: waiting };
   await Promise.all(subs.map((sub) => sendPush(sub, data)));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  Socmed Hub — an overview of what's scheduled in Buffer (posting itself happens in Buffer)
+//
+//  An owner pastes a Buffer API key in the Socmed Hub. It stays here on the server and is never sent
+//  back to the website. Buffer's free plan allows 3,000 requests a month per key (shared with any bot
+//  using the same key), so Buffer's answer is kept for a while and shared by everyone who opens the page.
+// ════════════════════════════════════════════════════════════════════════════
+// Reuse Buffer's answer for 30 minutes (change with the BUFFER_REFRESH_MINUTES var); "Refresh" can ask again after 2.
+const bufferFreshMs = () => (Number(ENV.BUFFER_REFRESH_MINUTES) || 30) * 60e3;
+const bufferManualMs = () => Math.min(2 * 60e3, bufferFreshMs());
+const BUFFER_DAILY_MAX = 40;         // most requests per Buffer account per day
+const BUFFER_ORGS_MS = 24 * 3600e3;  // re-read the account's organizations once a day
+const BUFFER_SENT_DAYS = 7;          // also show what went out in the last week
+
+const BUFFER_ACCOUNT_Q = 'query GigAccount { account { id name email organizations { id name } } }';
+const BUFFER_POST = `fragment P on Post {
+  id text status dueAt sentAt channelId channelService externalLink schedulingType
+  error { message supportUrl }
+  assets { type thumbnail }
+  tags { name color }
+  author { name }
+  metadata {
+    ... on InstagramPostMetadata { type }
+    ... on FacebookPostMetadata { type title }
+    ... on TiktokPostMetadata { type title }
+    ... on YoutubePostMetadata { type title }
+    ... on ThreadsPostMetadata { type }
+    ... on LinkedInPostMetadata { type }
+    ... on TwitterPostMetadata { type }
+    ... on PinterestPostMetadata { type title }
+    ... on GoogleBusinessPostMetadata { type title }
+    ... on MastodonPostMetadata { type }
+    ... on BlueskyPostMetadata { type }
+    ... on SubstackPostMetadata { type }
+  }
+}`;
+const BUFFER_UPCOMING = 'posts(first: 100, after: $after, input: { organizationId: $org, filter: { status: [scheduled, sending, error, needs_approval] }, sort: [{ field: dueAt, direction: asc }] })';
+// One request per organization: its channels, what's coming up, and what went out recently.
+const BUFFER_OVERVIEW_Q = `query GigOverview($org: OrganizationId!, $since: DateTime, $after: String) {
+  channels(input: { organizationId: $org }) { id name displayName service avatar type externalLink isQueuePaused isDisconnected isLocked }
+  upcoming: ${BUFFER_UPCOMING} { edges { node { ...P } } pageInfo { hasNextPage endCursor } }
+  recent: posts(first: 50, input: { organizationId: $org, filter: { status: [sent], dueAt: { start: $since } }, sort: [{ field: dueAt, direction: desc }] }) { edges { node { ...P } } }
+}
+${BUFFER_POST}`;
+const BUFFER_MORE_Q = `query GigMore($org: OrganizationId!, $after: String) {
+  upcoming: ${BUFFER_UPCOMING} { edges { node { ...P } } pageInfo { hasNextPage endCursor } }
+}
+${BUFFER_POST}`;
+
+const httpsOnly = (u) => (typeof u === 'string' && /^https:\/\/[^\s"'<>]+$/i.test(u) ? u.slice(0, 2000) : null);
+const readJson = async (key) => { try { return JSON.parse(await getSetting(key)) || null; } catch { return null; } };
+const socmedConfig = async () => ({ accounts: [], channels: {}, ...(await readJson('SOCMED')) });
+const socmedCacheKey = (id) => 'SOCMED_CACHE:' + id;
+
+async function bufferCall(key, query, variables = {}) {
+  let res;
+  try {
+    res = await fetch(ENV.BUFFER_API_URL || 'https://api.buffer.com', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, variables }),
+      signal: AbortSignal.timeout(20000),
+    });
+  } catch { fail("Couldn't reach Buffer just now. Please try again in a minute.", 'BUFFER_DOWN'); }
+  let j = null;
+  try { j = await res.json(); } catch { /* not JSON */ }
+  const err = j && Array.isArray(j.errors) ? j.errors[0] : null;
+  const code = err && err.extensions && err.extensions.code;
+  if (res.status === 401 || res.status === 403 || code === 'UNAUTHENTICATED' || code === 'FORBIDDEN') {
+    fail("Buffer didn't accept the API key — it may have been deleted. Make a new key in Buffer (Settings → API) and connect again.", 'BUFFER_KEY');
+  }
+  if (res.status === 429) {
+    const e = new AppError("Buffer says we've asked too often. It will refresh again by itself in a while.", 'BUFFER_BUSY');
+    e.retryAfter = Number(res.headers.get('Retry-After')) || 900;
+    throw e;
+  }
+  if (!j || !j.data) fail('Buffer had a problem: ' + String((err && err.message) || 'error ' + res.status).slice(0, 160), 'BUFFER_ERROR');
+  return j.data;
+}
+
+function bufferChannel(c, acct, org) {
+  return {
+    id: String(c.id), account: acct.id, accountLabel: acct.label, org: org.name,
+    defaultBrand: acct.orgs.length > 1 ? org.name : null, // a Buffer organization per brand
+    name: String(c.displayName || c.name || 'Channel').slice(0, 80), handle: String(c.name || '').slice(0, 80),
+    service: String(c.service || 'other'), type: c.type || null, avatar: httpsOnly(c.avatar), profile: httpsOnly(c.externalLink),
+    paused: !!c.isQueuePaused, disconnected: !!c.isDisconnected, locked: !!c.isLocked,
+  };
+}
+
+function bufferPost(p, acct) {
+  const assets = Array.isArray(p.assets) ? p.assets : [];
+  const meta = p.metadata || {};
+  return {
+    id: String(p.id), account: acct.id, channelId: String(p.channelId), service: String(p.channelService || 'other'),
+    status: p.status, dueAt: p.dueAt || null, sentAt: p.sentAt || null, text: String(p.text || '').slice(0, 700),
+    kind: meta.type || null, title: meta.title ? String(meta.title).slice(0, 140) : null,
+    thumb: assets.map((x) => httpsOnly(x && x.thumbnail)).find(Boolean) || null, media: assets.length,
+    mediaType: (assets[0] && assets[0].type) || null, link: httpsOnly(p.externalLink),
+    error: p.error ? { message: String(p.error.message || '').slice(0, 300), help: httpsOnly(p.error.supportUrl) } : null,
+    tags: (Array.isArray(p.tags) ? p.tags : []).slice(0, 8).map((t) => ({ name: String(t.name || '').slice(0, 40), color: /^#[0-9a-f]{3,8}$/i.test(t.color) ? t.color : null })),
+    by: (p.author && p.author.name) || null, reminder: p.schedulingType === 'notification',
+  };
+}
+
+const bufferOrgs = (account) => (account.organizations || []).slice(0, 10).map((o) => ({ id: String(o.id), name: String(o.name || 'Buffer').slice(0, 80) }));
+
+// Asks Buffer again for one account and keeps the answer. On a problem, the last good answer stays.
+async function bufferRefresh(cfg, acct) {
+  const prev = (await readJson(socmedCacheKey(acct.id))) || {};
+  const day = nowIso().slice(0, 10);
+  const calls = prev.calls && prev.calls.day === day ? prev.calls : { day, n: 0 };
+  const out = { ...prev, calls };
+  const ask = async (query, vars) => {
+    if (calls.n >= BUFFER_DAILY_MAX) fail("Buffer has been asked a lot today, so this shows the last update. It refreshes again tomorrow.", 'BUFFER_DAILY');
+    calls.n++;
+    return bufferCall(acct.key, query, vars);
+  };
+  try {
+    if (!acct.orgs || !acct.orgsAt || Date.now() - acct.orgsAt > BUFFER_ORGS_MS) {
+      const d = await ask(BUFFER_ACCOUNT_Q);
+      acct.orgs = bufferOrgs(d.account || {});
+      acct.orgsAt = Date.now();
+      await setSetting('SOCMED', JSON.stringify(cfg));
+    }
+    const since = new Date(Date.now() - BUFFER_SENT_DAYS * 864e5).toISOString();
+    const channels = [], posts = new Map();
+    let more = false;
+    for (const org of acct.orgs.slice(0, 5)) {
+      const d = await ask(BUFFER_OVERVIEW_Q, { org: org.id, since });
+      for (const c of d.channels || []) channels.push(bufferChannel(c, acct, org));
+      let page = d.upcoming;
+      const take = (pg) => { for (const e of (pg && pg.edges) || []) if (e && e.node) posts.set(String(e.node.id), bufferPost(e.node, acct)); };
+      take(page);
+      for (let i = 0; page && page.pageInfo && page.pageInfo.hasNextPage && i < 3; i++) {
+        page = (await ask(BUFFER_MORE_Q, { org: org.id, after: page.pageInfo.endCursor })).upcoming;
+        take(page);
+      }
+      if (page && page.pageInfo && page.pageInfo.hasNextPage) more = true;
+      take(d.recent);
+    }
+    Object.assign(out, { at: Date.now(), channels, posts: [...posts.values()], more, error: null, errorCode: null, errorAt: null, busyUntil: null });
+  } catch (e) {
+    if (!(e instanceof AppError)) { console.error('buffer refresh', e && e.stack || e); e = new AppError("Couldn't read Buffer just now. Please try again in a minute.", 'BUFFER_ERROR'); }
+    Object.assign(out, { error: e.message, errorCode: e.code, errorAt: Date.now() });
+    if (e.code === 'BUFFER_BUSY') out.busyUntil = Date.now() + Math.min(e.retryAfter || 900, 86400) * 1000;
+  }
+  await setSetting(socmedCacheKey(acct.id), JSON.stringify(out));
+  return out;
+}
+
+// Whether it's time to ask Buffer again (otherwise everyone sees the kept answer).
+function bufferDue(c, force) {
+  const now = Date.now();
+  if (c.busyUntil && c.busyUntil > now) return false;
+  const last = Math.max(c.at || 0, c.errorAt || 0);
+  if (force) return now - last > bufferManualMs();
+  if (c.errorCode === 'BUFFER_KEY') return false; // waits for a new key (or "Refresh")
+  return now - last > bufferFreshMs();
+}
+
+const channelBrand = (ch, cfg) => ((cfg.channels[ch.id] || {}).brand || ch.defaultBrand || null);
+const channelLink = (ch, cfg) => (cfg.channels[ch.id] || {}).link || `https://publish.buffer.com/channels/${encodeURIComponent(ch.id)}`;
+
+async function socmedOverview(force) {
+  const cfg = await socmedConfig();
+  const channels = [], posts = [], problems = [];
+  let updatedAt = null, more = false;
+  for (const acct of cfg.accounts) {
+    let c = (await readJson(socmedCacheKey(acct.id))) || {};
+    if (bufferDue(c, force)) c = await bufferRefresh(cfg, acct);
+    for (const ch of c.channels || []) channels.push({ ...ch, accountLabel: acct.label, brand: channelBrand(ch, cfg), buffer: channelLink(ch, cfg) });
+    posts.push(...(c.posts || []));
+    if (c.error) problems.push({ account: acct.label, message: c.error, code: c.errorCode, at: c.errorAt ? new Date(c.errorAt).toISOString() : null });
+    if (c.at && (!updatedAt || c.at < updatedAt)) updatedAt = c.at;
+    if (c.more) more = true;
+  }
+  return { connected: cfg.accounts.length > 0, channels, posts, problems, more, updatedAt: updatedAt ? new Date(updatedAt).toISOString() : null };
+}
+
+async function socmedSetup() {
+  const cfg = await socmedConfig();
+  const accounts = [], channels = [];
+  for (const a of cfg.accounts) {
+    const c = (await readJson(socmedCacheKey(a.id))) || {};
+    accounts.push({ id: a.id, label: a.label, name: a.name || null, email: a.email || null, keyEnd: a.key.slice(-4),
+      orgs: (a.orgs || []).map((o) => o.name), added_at: a.added_at, error: c.error || null, updatedAt: c.at ? new Date(c.at).toISOString() : null });
+    for (const ch of c.channels || []) {
+      const m = cfg.channels[ch.id] || {};
+      channels.push({ ...ch, accountLabel: a.label, brand: m.brand || '', link: m.link || '', defaultBrand: ch.defaultBrand, buffer: channelLink(ch, cfg) });
+    }
+  }
+  // Brand names already in use (channels + talents), offered as suggestions.
+  const talentBrands = (await DB.prepare("SELECT DISTINCT brand FROM talents WHERE brand IS NOT NULL AND brand <> ''").all()).results.map((r) => r.brand);
+  const brands = [...new Set([...Object.values(cfg.channels).map((m) => m.brand), ...channels.map((c) => c.defaultBrand), ...talentBrands].filter(Boolean))]
+    .sort((x, y) => x.localeCompare(y));
+  return { accounts, channels, brands };
+}
+
+async function socmedConnect(req) {
+  const key = String(req.apiKey || '').trim();
+  if (key.length < 16 || key.length > 500 || /\s/.test(key)) fail("That doesn't look like a Buffer API key — copy the whole key from Buffer (Settings → API).");
+  const tries = await guard('bufconn:' + req._ip, 10);
+  await tries.count();
+  let d;
+  try { d = await bufferCall(key, BUFFER_ACCOUNT_Q); } catch (e) {
+    if (e.code === 'BUFFER_KEY') fail("Buffer didn't accept that key. Copy it again from Buffer (Settings → API) — the whole key, with nothing extra.");
+    throw e;
+  }
+  const account = d.account || {};
+  const cfg = await socmedConfig();
+  const label = String(req.label || '').trim().replace(/\s+/g, ' ').slice(0, 40);
+  let acct = cfg.accounts.find((a) => a.buffer_id && a.buffer_id === String(account.id));
+  if (acct) { acct.key = key; if (label) acct.label = label; } else {
+    if (cfg.accounts.length >= 10) fail('You can connect up to 10 Buffer accounts.');
+    acct = { id: uuid(), buffer_id: String(account.id || uuid()), label: label || String(account.name || account.email || 'Buffer').slice(0, 40), added_at: nowIso() };
+    cfg.accounts.push(acct);
+  }
+  Object.assign(acct, { key, name: account.name || null, email: account.email || null, orgs: bufferOrgs(account), orgsAt: Date.now() });
+  await setSetting('SOCMED', JSON.stringify(cfg));
+  // Read the schedule right away (keeps today's request count).
+  const prev = (await readJson(socmedCacheKey(acct.id))) || {};
+  await setSetting(socmedCacheKey(acct.id), JSON.stringify({ calls: prev.calls, channels: prev.channels, posts: prev.posts }));
+  await bufferRefresh(cfg, acct);
+  return socmedSetup();
+}
+
+async function socmedRemove(id) {
+  const cfg = await socmedConfig();
+  if (!cfg.accounts.some((a) => a.id === id)) fail('That Buffer account is no longer connected.');
+  cfg.accounts = cfg.accounts.filter((a) => a.id !== id);
+  await setSetting('SOCMED', JSON.stringify(cfg));
+  await DB.prepare('DELETE FROM settings WHERE key = ?').bind(socmedCacheKey(id)).run();
+  return socmedSetup();
+}
+
+async function socmedSaveChannels(map) {
+  const cfg = await socmedConfig();
+  for (const [id, v] of Object.entries(map || {}).slice(0, 500)) {
+    if (!/^[\w-]{1,64}$/.test(id)) continue;
+    const brand = String((v && v.brand) || '').trim().replace(/\s+/g, ' ').slice(0, 40);
+    let link = String((v && v.link) || '').trim();
+    if (link) {
+      link = cleanLink(link);
+      if (!link || !link.startsWith('https://')) fail("One of the Buffer links doesn't look right — copy the whole address (it starts with https://).");
+    }
+    if (brand || link) cfg.channels[id] = { brand: brand || null, link: link || null }; else delete cfg.channels[id];
+  }
+  await setSetting('SOCMED', JSON.stringify(cfg));
+  return socmedSetup();
 }

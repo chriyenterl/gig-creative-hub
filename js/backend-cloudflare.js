@@ -185,6 +185,15 @@ export function createCloudflareBackend(cfg, { portal = false } = {}) {
     storage() { return call('storage'); },
     setStorageLimit(gb) { return call('setStorageLimit', { gb }); },
 
+    // ── Socmed Hub: what's scheduled in Buffer (owners connect Buffer; the key stays on the server) ──
+    socmed: {
+      overview(refresh = false) { return call('socmedOverview', { refresh }); },
+      setup() { return call('socmedSetup'); },
+      connect(label, apiKey) { return call('socmedConnect', { label, apiKey }); },
+      remove(id) { return call('socmedRemove', { id }); },
+      saveChannels(channels) { return call('socmedSaveChannels', { channels }); },
+    },
+
     // ── Print Hub ────────────────────────────────────────────────────────
     print: {
       form(orderKey) { return call('printForm', { orderKey }); },

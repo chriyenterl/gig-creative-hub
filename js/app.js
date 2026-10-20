@@ -14,6 +14,7 @@ import { Talents, TalentDetail } from './views/talents.js';
 import { Links } from './views/links.js';
 import { Settings } from './views/settings.js';
 import { Access } from './views/access.js';
+import { Socmed } from './views/socmed.js';
 import { AssetDetail } from './views/asset-detail.js';
 
 setApi(await loadBackend());
@@ -44,7 +45,7 @@ const NAV = [
   ] },
   { id: 'access', label: 'Links & access', icon: 'key', ownersOnly: true },
 ];
-const PAGE_LABELS = { library: 'Library', seasons: 'Seasons', talents: 'Talents', links: 'Upload links', access: 'Links & access', settings: 'Settings' };
+const PAGE_LABELS = { library: 'Library', seasons: 'Seasons', talents: 'Talents', links: 'Upload links', access: 'Links & access', settings: 'Settings', socmed: 'Socmed Hub' };
 
 // Which sidebar groups are unfolded (remembered in this browser).
 const GROUPS_KEY = 'gig-nav-groups';
@@ -84,6 +85,7 @@ function Shell() {
     links: () => html`<${Links} query=${route.query} />`,
     settings: () => html`<${Settings} />`,
     access: () => (s.user?.viaLink ? html`<${Dashboard} />` : html`<${Access} />`),
+    socmed: () => html`<${Socmed} sub=${p1} query=${route.query} />`,
   };
   const page = (pages[p0] || pages.dashboard)();
   const pageLabel = PAGE_LABELS[p0] || NAV.find((n) => n.id === p0)?.label || 'Dashboard';
@@ -125,7 +127,10 @@ function Shell() {
           </div>`;
         })}
         <div class="nav-divider"></div>
+        <span class="nav-label">Hubs</span>
         <a class="nav-item" href="print/index.html"><${Icon} name="printer" /><span>Print Hub</span><span class="nav-ext"><${Icon} name="external" size=${14} /></span></a>
+        <a href=${hrefFor('socmed')} class=${'nav-item' + (p0 === 'socmed' ? ' active' : '')} aria-current=${p0 === 'socmed' ? 'page' : undefined}>
+          <${Icon} name="megaphone" /><span>Socmed Hub</span></a>
       </nav>
       <div class="sidebar-foot">
         <${InstallButton} appName=${CONFIG.BRAND_NAME} />

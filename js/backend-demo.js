@@ -261,6 +261,95 @@ function printSeed() {
   };
 }
 
+// ── Socmed Hub (demo): a pretend Buffer account, with posts spread over the coming days ──
+const SOCMED_KEY = 'gig-socmed-demo-v1';
+const DEMO_CHANNELS = [
+  ['ch_noms_ig', 'instagram', 'Noms Malaysia', 'noms.my', 'Noms'],
+  ['ch_noms_tt', 'tiktok', 'Noms Malaysia', 'noms.my', 'Noms'],
+  ['ch_noms_fb', 'facebook', 'Noms', 'Noms', 'Noms'],
+  ['ch_gig_ig', 'instagram', 'GIG Prints', 'gigprints', 'GIG Prints'],
+  ['ch_gig_fb', 'facebook', 'GIG Prints', 'GIG Prints', 'GIG Prints'],
+  ['ch_gig_th', 'threads', 'GIG Prints', 'gigprints', 'GIG Prints'],
+  ['ch_gc_yt', 'youtube', 'GIG Creatives', 'gigcreatives', null],
+];
+// [channel, hours from now, status, type, text, picture]
+const DEMO_POSTS = [
+  ['ch_noms_ig', 3, 'scheduled', 'reel', 'New flavour drop: Pandan Gula Melaka 🍃 Which one are you trying first?', 'summer-leo'],
+  ['ch_noms_tt', 5, 'scheduled', 'post', 'POV: you finally found the snack that goes with everything #noms', 'ever-4'],
+  ['ch_gig_ig', 7, 'scheduled', 'carousel', 'Behind the scenes: 2,000 waterproof labels for @noms.my, start to finish', 'studio-bts'],
+  ['ch_noms_fb', 26, 'scheduled', 'post', 'Raya open house hampers are back — order by 15 March for delivery.', 'flatlay-1'],
+  ['ch_gig_fb', 28, 'needs_approval', 'post', 'Grand opening bunting for KK Fitness 💪 Need one for your shop? WhatsApp us.', 'flatlay-3'],
+  ['ch_noms_ig', 31, 'scheduled', 'story', 'Poll: sweet or spicy? 🌶️🍯', 'vday-maya'],
+  ['ch_gig_th', 33, 'scheduled', 'post', 'Quick tip: send your artwork as a PDF and the colours come out exactly right.', null],
+  ['ch_noms_tt', 50, 'scheduled', 'post', 'Packing 500 orders in 60 seconds ⏱️', 'bts-priya'],
+  ['ch_gc_yt', 54, 'scheduled', 'short', 'How we shoot product photos with just a phone', 'ever-1'],
+  ['ch_gig_ig', 75, 'scheduled', 'reel', 'Business cards that people actually keep — 4 paper types compared', 'flatlay-2'],
+  ['ch_noms_ig', 98, 'scheduled', 'post', 'Customer of the week: thank you Aina! ☕', 'ever-3'],
+  ['ch_noms_fb', 122, 'scheduled', 'post', 'Weekend promo: free delivery in the Klang Valley this Sat & Sun.', null],
+  ['ch_gig_fb', 145, 'scheduled', 'post', '11.11 early bird: 20% off all sticker orders.', 'bf-dan'],
+  ['ch_noms_ig', 170, 'scheduled', 'carousel', '5 ways to enjoy Noms at your next open house', 'flatlay-1'],
+  ['ch_noms_fb', -2, 'error', 'post', 'Flash sale ends tonight!', null],
+  ['ch_noms_ig', -20, 'sent', 'reel', 'Taste test with the GIG team 😋', 'mascot-wave'],
+  ['ch_gig_ig', -44, 'sent', 'post', 'Fresh off the press: Hari Raya posters for Siti 🌙', 'mascot-thumbs'],
+  ['ch_noms_tt', -70, 'sent', 'post', 'Unboxing our new packaging', 'xmas-dan'],
+];
+function demoSocmed() {
+  const read = () => { try { return JSON.parse(localStorage.getItem(SOCMED_KEY)) || null; } catch { return null; } };
+  const write = (s) => { try { localStorage.setItem(SOCMED_KEY, JSON.stringify(s)); } catch {} };
+  const sample = (label = 'Main Buffer') => ({ id: 'demo1', label, name: 'GIG (demo)', email: 'you@demo.team', keyEnd: 'demo', orgs: ['GIG Creatives'], added_at: new Date().toISOString() });
+  const state = () => read() || { accounts: [sample()], channels: Object.fromEntries(DEMO_CHANNELS.filter((c) => c[4]).map((c) => [c[0], { brand: c[4], link: null }])), at: Date.now() };
+  const wait = (ms = 120) => new Promise((r) => setTimeout(r, ms));
+  const pic = (k) => (k && svgFor(k) ? 'data:image/svg+xml,' + encodeURIComponent(svgFor(k)) : null);
+  const channelsOf = (s) => (s.accounts.length ? DEMO_CHANNELS : []).map(([id, service, name, handle]) => ({
+    id, account: 'demo1', accountLabel: s.accounts[0].label, org: 'GIG Creatives', defaultBrand: null, name, handle, service,
+    type: null, avatar: null, profile: null, paused: false, disconnected: id === 'ch_noms_fb', locked: false,
+    brand: s.channels[id]?.brand || null, link: s.channels[id]?.link || '',
+    buffer: s.channels[id]?.link || 'https://publish.buffer.com/channels/' + id,
+  }));
+  const hour = 3600e3, base = Math.floor(Date.now() / hour) * hour;
+  const posts = (s) => (s.accounts.length ? DEMO_POSTS : []).map(([ch, h, status, kind, text, img], i) => {
+    const c = DEMO_CHANNELS.find((x) => x[0] === ch);
+    const when = new Date(base + h * hour + (i % 4) * 15 * 60e3).toISOString();
+    return {
+      id: 'demo-post-' + i, account: 'demo1', channelId: ch, service: c[1], status, dueAt: when, sentAt: status === 'sent' ? when : null, text, kind,
+      title: null, thumb: pic(img), media: img ? 1 : 0, mediaType: kind === 'reel' || kind === 'short' ? 'video' : img ? 'image' : null,
+      link: null, error: status === 'error' ? { message: 'Facebook needs you to reconnect this Page in Buffer.', help: null } : null,
+      tags: i % 5 === 0 ? [{ name: 'Promo', color: '#ff3d7f' }] : [], by: 'You', reminder: kind === 'story',
+    };
+  });
+  const setup = (s) => ({ accounts: s.accounts, channels: channelsOf(s), brands: [...new Set(Object.values(s.channels).map((m) => m.brand).filter(Boolean))].sort() });
+  return {
+    async overview(refresh) {
+      await wait(refresh ? 600 : 120);
+      const s = state();
+      if (refresh) { s.at = Date.now(); write(s); }
+      return { connected: s.accounts.length > 0, channels: channelsOf(s), posts: posts(s), problems: [], more: false, updatedAt: new Date(s.at || Date.now()).toISOString() };
+    },
+    async setup() { await wait(); return setup(state()); },
+    async connect(label, apiKey) {
+      await wait(500);
+      if (String(apiKey || '').trim().length < 16) throw new Error("That doesn't look like a Buffer API key — copy the whole key from Buffer (Settings → API).");
+      const s = state();
+      s.accounts = [sample(String(label || '').trim() || 'Main Buffer')];
+      s.at = Date.now();
+      write(s);
+      return setup(s);
+    },
+    async remove() { await wait(); const s = state(); s.accounts = []; write(s); return setup(s); },
+    async saveChannels(map) {
+      await wait();
+      const s = state();
+      for (const [id, v] of Object.entries(map || {})) {
+        const brand = String(v?.brand || '').trim().slice(0, 40), link = String(v?.link || '').trim();
+        if (link && !/^https:\/\/\S+$/.test(link)) throw new Error("One of the Buffer links doesn't look right — copy the whole address (it starts with https://).");
+        if (brand || link) s.channels[id] = { brand: brand || null, link: link || null }; else delete s.channels[id];
+      }
+      write(s);
+      return setup(s);
+    },
+  };
+}
+
 export function createDemoBackend() {
   let db = load();
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch {} };
@@ -441,6 +530,8 @@ export function createDemoBackend() {
     async removeFiles(paths) {
       for (const p of paths) { await idb.del(p).catch(() => {}); urlCache.delete(p); }
     },
+
+    socmed: demoSocmed(),
 
     print: (() => {
       let pdb = null;
@@ -789,7 +880,7 @@ export function createDemoBackend() {
 
     // Demo-only: wipe everything and start again with sample data.
     async resetDemo() {
-      try { localStorage.removeItem(KEY); localStorage.removeItem(PRINT_KEY); localStorage.removeItem(LIMIT_KEY); } catch {}
+      try { localStorage.removeItem(KEY); localStorage.removeItem(PRINT_KEY); localStorage.removeItem(LIMIT_KEY); localStorage.removeItem(SOCMED_KEY); } catch {}
       await idb.clear().catch(() => {});
       db = seed();
       save();

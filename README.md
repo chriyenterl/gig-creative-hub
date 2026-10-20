@@ -10,8 +10,8 @@ One central place for your marketing media — instead of juggling Google Sheets
 | **Seasons** | Content sorted by campaign season (starts with New Year, Valentine's Day, Back to School and Christmas & Holidays), plus **Evergreen** for regular any-time content. Add, rename, recolour and reorder seasons. |
 | **Talents** | Scout and track influencers: platforms, followers, **tier** (Nano UGC / Micro KOL…), **type**, **brand**, **languages**, rates, contact, notes — and a clear **decision** status (Prospect → Contacted → Awaiting approval → Approved – go ahead → In production → Delivered, or Not proceeding). Switch between a **table** and a **board** (drag cards between statuses). **Import your list from Notion** or any CSV. |
 | **Upload links** | Give each creator their **own private link**. They see only an upload page — nothing else. You can **disable**, **change** (new address, old one stops working), set an **expiry**, or **delete** each link at any time. |
-
 | **Print Hub** | A second app — **GIG Print Hub** (sidebar → **Print Hub**) for print orders. Customers fill in your order form through one shared link; staff see **New → Pending → Completed**, open any order for full details and artwork, add internal notes, and print a job sheet. Your bot is notified when a **new order** comes in and when an order is **completed**, so it can message the customer (e.g. “ready for pickup”). |
+| **Socmed Hub** | Sidebar → **Socmed Hub**: an overview of everything scheduled in **Buffer** — **by brand** and **by platform** (Instagram, Facebook, TikTok, YouTube, Threads…), what's coming up day by day, what failed, and what went out this week. Every channel has **Open in Buffer**. Posting and editing stay in Buffer (or your bot). |
 
 ---
 
@@ -135,6 +135,11 @@ and videos have **Add cover photo**: the cover is the video's thumbnail in the l
 later in **Review** (saved when you click away) or on the item's details; add, change or remove a video's cover on its details.
 Captions are searchable and included in **Export list**.
 
+**Upload from Files, or add a link** — the upload window (and a creator's upload page) has two tabs: **Upload from Files**
+picks files from the computer or phone (on an iPhone, tap **Choose File**, not Photo Library, to send the full-quality original),
+and **Add a link** saves a Google Drive / Dropbox / WeTransfer / YouTube link as a library item instead of a file — it takes
+no storage, opens in a new tab, and can have a cover photo and caption like any other item.
+
 **Approve content** — Review → Approve / Request changes / Reject.
 
 **Reuse content** — Library → filter e.g. *Approved* + *Not used yet* + a season → open an item → **Download**,
@@ -251,6 +256,36 @@ count (iPhone/iPad with alerts on, Android launchers that support it, and comput
 Artwork and voice notes are stored in the **print/** folder of your file storage; orders are in the **print_orders** table.
 The Print Hub works with the Cloudflare or Google setup (or demo mode) — not with the Supabase option.
 
+## Socmed Hub (overview of Buffer)
+
+Schedule your posts in **Buffer** as usual (or let your bot add them to Buffer). The Socmed Hub reads Buffer and shows
+everything in one place — nothing is posted or changed from the hub.
+
+**Connect Buffer (once, owner):**
+1. Socmed Hub → **Setup**.
+2. Open **Buffer → Settings → API** (the link is on the page), create a key called *GIG Hub* and copy it.
+3. Paste it into **Buffer API key** → **Connect**. The key is kept on your Cloudflare server only; the website never shows it again.
+   Several Buffer logins (e.g. one per brand)? Connect each one.
+4. Under **Brands**, type the brand for each channel (e.g. Noms, GIG Prints) → **Save brands**. If a Buffer account has several
+   organizations, each organization's name is used as the brand until you type one.
+
+**Using it (everyone with Creative Hub access):**
+- **Schedule** — posts grouped by day: time, platform, account, brand, post type (Reel, Story…), caption and picture.
+  Tabs for **Coming up**, **Needs attention** (failed or waiting for approval in Buffer) and **Sent · last 7 days**.
+- **By brand** / **By platform** — every Buffer channel with how many posts are coming up and when the next one goes out,
+  plus warnings for a disconnected channel or paused queue. **Open in Buffer** jumps straight to that channel in Buffer.
+- Filter by brand and platform at the top. **Refresh** asks Buffer for the latest.
+
+**Good to know:**
+- Buffer's free plan allows 3,000 API requests a month per key. To stay well inside it, the hub keeps Buffer's answer for
+  30 minutes and shares it with everyone (at most 40 requests per Buffer account a day). If your bot uses the same Buffer key,
+  it shares that allowance — still plenty for both.
+- If a key is deleted in Buffer, the hub shows a note and keeps the last schedule on screen; connect a new key in Setup.
+- If **Open in Buffer** ever lands on the wrong page, open the channel in Buffer, copy the address and paste it under
+  Setup → Brands → **Buffer link** for that channel.
+- Buffer doesn't support Xiaohongshu or Lemon8, so posts for those don't appear here.
+- The Socmed Hub needs the Cloudflare setup (demo mode shows sample data).
+
 ## Good to know (Cloudflare version)
 
 - **Speed:** saves take a fraction of a second. Big videos upload in 10 MB pieces, and a piece that fails is retried
@@ -308,6 +343,7 @@ icons/                      App icons
 js/print/*.js               Print Hub screens and rules
 cloudflare/worker.js        The Cloudflare server (files in R2, data in D1)
 cloudflare/wrangler.toml    Its settings for the wrangler tool
+cloudflare/tests/           Server tests (run.sh — uses a local copy, never your real data)
 google-apps-script/Code.gs  Alternative: Google backend — paste into Apps Script
 supabase/schema.sql         Only needed for the Supabase option
 ```

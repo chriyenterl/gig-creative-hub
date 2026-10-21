@@ -36,7 +36,7 @@ const NAV = [
     { id: 'library', label: 'All content' },
     { id: 'library', type: 'image', label: 'Photos' },
     { id: 'library', type: 'video', label: 'Videos' },
-    { id: 'library', cat: 'brand', label: 'Brand kit' },
+    { id: 'library', cat: 'brand', label: 'Brand & menus' },
     { id: 'seasons', label: 'Seasons' },
   ] },
   { group: 'people', label: 'People', icon: 'users', items: [

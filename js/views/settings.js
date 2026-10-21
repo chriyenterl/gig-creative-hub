@@ -4,6 +4,8 @@ import { DEMO, MODE } from '../api.js';
 import { CONFIG } from '../../config.js';
 import { fmtBytes, fmtGB } from '../util.js';
 import { Icon, PageHead, PasscodeInput, confirmDialog, toast, toastError } from '../ui.js';
+import { FastPreviews } from './fast-previews.js';
+import { previewsOn } from '../previews.js';
 
 function Team() {
   const { team_members, user } = useStore();
@@ -150,6 +152,7 @@ function About() {
       <dt>Files stored</dt><dd>${assets.length} items · ${fmtBytes(total)}</dd>
     </dl>
     ${storage && html`<${Storage} storage=${storage} readOnly=${!!getState().user?.viaLink} />`}
+    ${previewsOn() && html`<div class="storage-box"><div class="storage-head"><b>Fast previews</b></div><${FastPreviews} inSettings /></div>`}
     ${backendLinks && html`<div class="page-actions">
       <a class="btn" href=${backendLinks.sheet} target="_blank" rel="noopener"><${Icon} name="grid" size=${16} />Open the data sheet</a>
       <a class="btn" href=${backendLinks.folder} target="_blank" rel="noopener"><${Icon} name="external" size=${16} />Open files in Drive</a>

@@ -6,11 +6,14 @@ import { CONFIG } from '../config.js';
 import { uid, safeName, stripExt, fmtBytes, timeAgo, mediaTypeFor, MEDIA } from './util.js';
 import { Icon, Dropzone, Progress, ToastHost, CoverPicker, Tabs, toastError } from './ui.js';
 import { normalizeLink } from './print/model.js';
+import { setApi } from './store.js';
+import { previewsForUpload } from './previews.js';
 
 const LINK_KINDS = [['video', 'Video'], ['image', 'Photo'], ['document', 'Document'], ['other', 'Other']];
 import { Brand } from './views/login.js';
 
 const api = await loadBackend({ portal: true });
+setApi(api); // so the shared pieces (e.g. fast previews) use the same connection
 const token = decodeURIComponent(location.hash.replace(/^#/, '')).trim();
 
 const STATUS_FOR_CREATOR = {
@@ -63,9 +66,12 @@ function Portal() {
           cover = await api.uploadFile(coverPath, it.cover, { linkToken: token }) || coverPath;
         }
         const stored = await api.uploadFile(path, it.file, { linkToken: token, onProgress: (p) => patch(it.id, { progress: p }) }) || path;
+        // Small copies so the team's library loads fast (the original is sent as it is).
+        const small = await previewsForUpload(it.file, mediaTypeFor(it.file.type, it.file.name), { cover: cover && it.cover, upload: { linkToken: token } });
         await api.portal.submit(token, {
           path: stored, title: it.title, description: it.note, file_name: it.file.name,
           mime_type: it.file.type || null, size_bytes: it.file.size, cover, caption: it.caption.trim() || null,
+          thumb: small.thumb_path || null, preview: small.preview_path || null,
         });
         patch(it.id, { state: 'done', progress: 1 });
         ok++;
@@ -91,8 +97,9 @@ function Portal() {
         const coverPath = `submissions/${token}/${uid()}-cover-${safeName(link.cover.name)}`;
         cover = await api.uploadFile(coverPath, link.cover, { linkToken: token }) || coverPath;
       }
+      const small = cover ? await previewsForUpload(link.cover, 'video', { cover: link.cover, upload: { linkToken: token } }) : {};
       await api.portal.submit(token, { url: link.url.trim(), media_type: link.kind, title: link.title, description: link.note,
-        caption: link.caption.trim() || null, cover });
+        caption: link.caption.trim() || null, cover, thumb: small.thumb_path || null });
       setLink({ url: '', title: '', kind: 'video', note: '', caption: '', cover: null });
       setFinished(1);
       loadSubs();

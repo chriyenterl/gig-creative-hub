@@ -6,6 +6,7 @@ import {
   Empty, Modal, Field, confirmDialog, toast, toastError,
 } from '../ui.js';
 import { UploadDialog } from './upload-dialog.js';
+import { FastPreviews } from './fast-previews.js';
 
 const PAGE = 60;
 
@@ -172,6 +173,7 @@ export function Library({ query }) {
       </button>
       <button class="btn btn-primary" onClick=${() => setUploading(true)}><${Icon} name="upload" size=${16} />Upload</button>
     <//>
+    <${FastPreviews} />
 
     <${Tabs} value=${query.cat || ''} onChange=${(c) => set({ cat: c, tag: '' })} items=${[
       { id: '', label: 'All', count: catCount('') },

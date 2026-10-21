@@ -140,6 +140,13 @@ picks files from the computer or phone (on an iPhone, tap **Choose File**, not P
 and **Add a link** saves a Google Drive / Dropbox / WeTransfer / YouTube link as a library item instead of a file — it takes
 no storage, opens in a new tab, and can have a cover photo and caption like any other item.
 
+**Fast previews** — every photo you upload also gets two small copies: one for the library grid and one for the
+details view, so the library loads quickly even with big camera photos. Videos get a small picture from their cover
+photo, or from a frame near the start. Your originals are never changed: **Download** and **Copy share link** always
+give the full-quality file. Deleting an item deletes its small copies too. Items uploaded before this existed show
+a **Make fast previews** button at the top of the Library (also in Settings). Press it once on a computer with good
+wifi and keep the page open; you can stop and continue later.
+
 **Approve content** — Review → Approve / Request changes / Reject.
 
 **Reuse content** — Library → filter e.g. *Approved* + *Not used yet* + a season → open an item → **Download**,

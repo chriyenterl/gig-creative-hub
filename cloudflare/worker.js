@@ -22,7 +22,7 @@
 const TOKEN_DAYS = 30;           // how long a team login lasts
 const PBKDF2_ROUNDS = 20000;     // password hashing strength (kept modest for the free plan's CPU limit)
 const CHUNK = 10 * 1024 * 1024;  // upload part size — big files are sent in pieces of this size
-const SCHEMA_V = '9';            // bump when SCHEMA changes so new columns get added
+const SCHEMA_V = '10';            // bump when SCHEMA changes so new columns get added
 const GB = 1e9;                  // storage is counted the way Cloudflare bills it (1 GB = 1,000,000,000 bytes)
 const DEFAULT_LIMIT_GB = 10;     // uploads stop here (R2's free allowance) — change it in Settings
 
@@ -39,7 +39,8 @@ const SCHEMA = {
                   num: ['upload_count'], bool: ['is_active'] },
   assets:       { cols: ['id', 'title', 'description', 'category', 'media_type', 'season_id', 'talent_id', 'upload_link_id',
                          'source', 'storage_path', 'file_name', 'mime_type', 'size_bytes', 'tags', 'status', 'review_note',
-                         'reviewed_at', 'use_count', 'last_used_on', 'uploaded_by', 'cover_path', 'caption', 'external_url', 'created_at', 'updated_at'],
+                         'reviewed_at', 'use_count', 'last_used_on', 'uploaded_by', 'cover_path', 'caption', 'external_url',
+                         'thumb_path', 'preview_path', 'created_at', 'updated_at'],
                   num: ['size_bytes', 'use_count'], arr: ['tags'] },
   asset_usage:  { cols: ['id', 'asset_id', 'channel', 'note', 'used_on', 'created_by', 'created_at'] },
   print_orders: { cols: ['id', 'order_no', 'status', 'customer_name', 'company', 'phone', 'email', 'summary', 'quantity',
@@ -82,8 +83,9 @@ const SEED_SEASONS = [
   ['New Year', '#2a78d6'], ["Valentine's Day", '#e87ba4'], ['Back to School', '#4a3aa7'], ['Christmas & Holidays', '#e34948'],
 ];
 
-// File keys in R2 start with one of these folders.
-const FOLDERS = ['final/', 'raw/', 'brand/', 'creators/', 'print/'];
+// File keys in R2 start with one of these folders. previews/ holds the small copies of library photos
+// (thumb_path for the grid, preview_path for the details view) — originals are never changed.
+const FOLDERS = ['final/', 'raw/', 'brand/', 'creators/', 'print/', 'previews/'];
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -189,7 +191,7 @@ async function route(req, ctx) {
     case 'remove': await apiRemove(req.table, [req.id]); return true;
     case 'removeMany': await apiRemove(req.table, req.ids || []); return true;
     case 'startUpload': {
-      const folder = ['final', 'raw', 'brand'].includes(req.category) ? req.category : 'final';
+      const folder = ['final', 'raw', 'brand', 'previews'].includes(req.category) ? req.category : 'final';
       return startUpload(folder + '/', req, 'team');
     }
     case 'removeFiles': return removeFiles(req.ids || []);
@@ -397,6 +399,7 @@ async function apiInsert(t, row, me) {
     if (!LINK_TYPES.includes(row.media_type)) row.media_type = 'other';
     if (row.cover_path) await checkCover(row.cover_path);
     if (row.caption != null) row.caption = cleanCaption(row.caption);
+    await checkPreviews(row);
   } else if (t === 'assets') {
     const key = String(row.storage_path || '');
     if (!key) fail('Missing file.');
@@ -404,6 +407,7 @@ async function apiInsert(t, row, me) {
     if (!(await FILES.head(key))) fail('We could not find the uploaded file. Please try again.');
     if (row.cover_path) await checkCover(row.cover_path);
     if (row.caption != null) row.caption = cleanCaption(row.caption);
+    await checkPreviews(row);
   }
   if (t === 'upload_links') { row.token = newKey(); delete row.folder_id; }
   if (t === 'asset_usage' && !row.created_by) row.created_by = me.email || me.name;
@@ -430,6 +434,7 @@ async function apiUpdate(t, id, patch) {
   if (t === 'assets') {
     delete patch.storage_path;
     if (patch.cover_path) await checkCover(patch.cover_path); // null removes the cover
+    await checkPreviews(patch, ['previews/', 'creators/']);
     if (patch.caption !== undefined) patch.caption = cleanCaption(patch.caption);
     if (patch.external_url !== undefined) {
       const cur = await getRow('assets', String(id || ''));
@@ -457,6 +462,15 @@ async function apiRemove(t, ids) {
       const r = await DB.prepare(`SELECT DISTINCT asset_id FROM asset_usage WHERE id IN (${q})`).bind(...g).all();
       usageAssets.push(...r.results.map((x) => x.asset_id));
     });
+  }
+  if (t === 'assets') { // the small copies go with the item (the app removes the original and the cover)
+    const keys = [];
+    await inGroups(ids, async (g, q) => {
+      const r = await DB.prepare(`SELECT thumb_path, preview_path FROM assets WHERE id IN (${q})`).bind(...g).all();
+      for (const x of r.results) keys.push(x.thumb_path, x.preview_path);
+    });
+    const own = keys.filter((k) => k && String(k).startsWith('previews/'));
+    if (own.length) await removeFiles(own);
   }
   await deleteRows(t, ids);
   // Keep references tidy ("on delete set null").
@@ -957,12 +971,16 @@ async function checkSpace(size, who) {
 
 // Library files live under these folders; a video's cover photo must be an uploaded image in one of them.
 const LIBRARY = ['final/', 'raw/', 'brand/'];
-async function checkCover(key, folders = [...LIBRARY, 'creators/']) {
+async function checkCover(key, folders = [...LIBRARY, 'creators/'], what = 'cover photo') {
   key = String(key || '');
-  if (!knownKey(key) || !folders.some((p) => key.startsWith(p))) fail("That cover photo isn't in the GIG Creative Hub storage.");
+  if (!knownKey(key) || !folders.some((p) => key.startsWith(p))) fail(`That ${what} isn't in the GIG Creative Hub storage.`);
   const head = await FILES.head(key);
-  if (!head) fail("The cover photo didn't finish uploading. Please add it again.");
-  if (!String(head.httpMetadata?.contentType || '').startsWith('image/')) fail('The cover must be a photo (JPG, PNG…).');
+  if (!head) fail(`The ${what} didn't finish uploading. Please try again.`);
+  if (!String(head.httpMetadata?.contentType || '').startsWith('image/')) fail(`The ${what} must be a photo (JPG, PNG…).`);
+}
+// The small copies (thumb_path / preview_path) are photos in previews/ (team) or the creator's own folder.
+async function checkPreviews(row, folders = ['previews/']) {
+  for (const c of ['thumb_path', 'preview_path']) if (row[c]) await checkCover(row[c], folders, 'preview');
 }
 const cleanCaption = (c) => String(c || '').trim().slice(0, 5000) || null;
 const LINK_TYPES = ['video', 'image', 'document', 'other']; // what a link item points to
@@ -1016,12 +1034,14 @@ async function linkSubmit(req) {
     const url = cleanLink(req.externalUrl);
     if (!url) fail("That link doesn't look right — copy the whole link (it usually starts with https://).");
     if (req.coverId) await checkCover(req.coverId, [await linkFolder(l)]);
+    if (req.thumbId) await checkCover(req.thumbId, [await linkFolder(l)], 'preview');
     const asset = await insertRow('assets', {
       title: String(req.title || '').trim().slice(0, 300) || 'Link from ' + (l.label || 'creator'),
       description: String(req.description || '').trim().slice(0, 5000) || null,
       category: 'final', media_type: LINK_TYPES.includes(req.mediaType) ? req.mediaType : 'other',
       season_id: l.season_id, talent_id: l.talent_id, upload_link_id: l.id, source: 'talent',
       external_url: url, status: 'pending', uploaded_by: l.label, cover_path: req.coverId || null, caption: cleanCaption(req.caption),
+      thumb_path: (req.coverId && req.thumbId) || null,
     });
     await DB.prepare('UPDATE upload_links SET upload_count = COALESCE(upload_count, 0) + 1, last_upload_at = ? WHERE id = ?').bind(nowIso(), l.id).run();
     return asset.id;
@@ -1034,13 +1054,15 @@ async function linkSubmit(req) {
   const mime = (file.httpMetadata && file.httpMetadata.contentType) || req.mime_type || 'application/octet-stream';
   const fileName = req.file_name || (file.customMetadata && file.customMetadata.name) || key.split('/').pop();
   if (req.coverId) await checkCover(req.coverId, [l.folder_id]);
+  const previews = { thumb_path: req.thumbId || null, preview_path: req.previewId || null };
+  await checkPreviews(previews, [l.folder_id]);
   const asset = await insertRow('assets', {
     title: String(req.title || '').trim().slice(0, 300) || fileName,
     description: String(req.description || '').trim().slice(0, 5000) || null,
     category: 'final', media_type: mediaTypeFor(mime),
     season_id: l.season_id, talent_id: l.talent_id, upload_link_id: l.id, source: 'talent',
     storage_path: key, file_name: fileName, mime_type: mime, size_bytes: file.size,
-    status: 'pending', uploaded_by: l.label, cover_path: req.coverId || null, caption: cleanCaption(req.caption),
+    status: 'pending', uploaded_by: l.label, cover_path: req.coverId || null, caption: cleanCaption(req.caption), ...previews,
   });
   await DB.prepare('UPDATE upload_links SET upload_count = COALESCE(upload_count, 0) + 1, last_upload_at = ? WHERE id = ?')
     .bind(nowIso(), l.id).run();

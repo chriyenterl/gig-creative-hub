@@ -5,6 +5,7 @@ import { api, insertRow, getState, useStore, refreshStorage } from '../store.js'
 import { CATEGORIES, mediaTypeFor, safeName, stripExt, uid, parseTags, fmtBytes, MEDIA } from '../util.js';
 import { Icon, Modal, Dropzone, Progress, Field, SeasonSelect, TalentSelect, StorageWarning, CoverPicker, Tabs, toast, toastError } from '../ui.js';
 import { normalizeLink } from '../print/model.js';
+import { previewsForUpload } from '../previews.js';
 
 const LINK_KINDS = [['video', 'Video'], ['image', 'Photo'], ['document', 'Document'], ['other', 'Other']];
 
@@ -45,6 +46,8 @@ export function UploadDialog({ onClose, defaults = {} }) {
           cover = await api.uploadFile(coverPath, it.cover, { category: meta.category }) || coverPath;
         }
         const stored = await api.uploadFile(path, it.file, { category: meta.category, onProgress: (p) => patchItem(it.id, { progress: p }) }) || path;
+        // Small copies for fast loading (made from the file on this device — the original isn't changed).
+        const small = await previewsForUpload(it.file, mediaTypeFor(it.file.type, it.file.name), { cover: cover && it.cover });
         try {
           await insertRow('assets', {
             title: it.title.trim() || it.file.name,
@@ -63,9 +66,10 @@ export function UploadDialog({ onClose, defaults = {} }) {
             status: meta.status,
             reviewed_at: meta.status === 'approved' ? new Date().toISOString() : null,
             uploaded_by: getState().user?.email || getState().user?.name || null,
+            ...small,
           });
         } catch (e) {
-          await api.removeFiles([stored]).catch(() => {});
+          await api.removeFiles([stored, small.thumb_path, small.preview_path].filter(Boolean)).catch(() => {});
           throw e;
         }
         patchItem(it.id, { state: 'done', progress: 1 });
@@ -93,15 +97,18 @@ export function UploadDialog({ onClose, defaults = {} }) {
     setRunning(true);
     let cover = null;
     try {
+      let small = {};
       if (link.cover && link.kind === 'video') {
         const coverPath = `library/${meta.category}/${uid()}-cover-${safeName(link.cover.name)}`;
         cover = await api.uploadFile(coverPath, link.cover, { category: meta.category }) || coverPath;
+        small = await previewsForUpload(link.cover, 'video', { cover: link.cover });
       }
       await insertRow('assets', {
         title: link.title.trim() || url.replace(/^https?:\/\//, '').slice(0, 80), category: meta.category, media_type: link.kind,
         season_id: meta.season_id || null, talent_id: meta.talent_id || null, source: 'team', external_url: url, storage_path: null,
         cover_path: cover, caption: link.caption.trim() || null, tags: parseTags(meta.tags), status: meta.status,
         reviewed_at: meta.status === 'approved' ? new Date().toISOString() : null, uploaded_by: getState().user?.email || getState().user?.name || null,
+        ...small,
       });
       toast('Link added to the library.');
       onClose();

@@ -3,8 +3,10 @@ import { html, useState, useEffect } from '../lib.js';
 import { useStore, api, updateRow, deleteAssets, closeAsset, refreshAsset, refreshStorage, talentById, getState } from '../store.js';
 import { ASSET_STATUS, CATEGORIES, MEDIA, CHANNELS, fmtBytes, fmtDate, timeAgo, parseTags, today, copyText, hrefFor, uid, safeName } from '../util.js';
 import { Icon, Modal, MediaPreview, Field, SeasonSelect, TalentSelect, CoverPicker, useSignedUrls, confirmDialog, toast, toastError, downloadAsset } from '../ui.js';
+import { makePreviews, previewsOn } from '../previews.js';
 
 // A video's cover photo: shown as its thumbnail in the library and before it plays.
+// Its small grid copy (thumb_path) is made from the cover, so it's replaced or removed together with it.
 function CoverBox({ asset }) {
   const [busy, setBusy] = useState(false);
   const direct = asset.cover_path && api.media?.({ storage_path: asset.cover_path });
@@ -15,9 +17,14 @@ function CoverBox({ asset }) {
     try {
       const path = `library/${asset.category}/${uid()}-cover-${safeName(file.name)}`;
       const stored = await api.uploadFile(path, file, { category: asset.category }) || path;
-      const old = asset.cover_path;
-      try { await updateRow('assets', asset.id, { cover_path: stored }); } catch (e) { api.removeFiles([stored]).catch(() => {}); throw e; }
-      if (old) api.removeFiles([old]).catch(() => {});
+      const old = [asset.cover_path, asset.thumb_path].filter(Boolean);
+      const patch = { cover_path: stored };
+      if (previewsOn()) { // a new small copy from the new cover (none if it can't be made — the grid then uses the cover)
+        patch.thumb_path = null;
+        try { patch.thumb_path = (await makePreviews({ ...asset, cover_path: stored, thumb_path: null }, { cover: file })).thumb_path || null; } catch { /* keep going */ }
+      }
+      try { await updateRow('assets', asset.id, patch); } catch (e) { api.removeFiles([stored, patch.thumb_path].filter(Boolean)).catch(() => {}); throw e; }
+      if (old.length) api.removeFiles(old).catch(() => {});
       refreshStorage();
       toast('Cover photo saved.');
     } catch (e) { toastError(e); }
@@ -25,8 +32,17 @@ function CoverBox({ asset }) {
   };
   const remove = async () => {
     if (!(await confirmDialog({ title: 'Remove the cover photo?', message: 'The video will show its first frame instead.', confirmLabel: 'Remove' }))) return;
-    const old = asset.cover_path;
-    try { await updateRow('assets', asset.id, { cover_path: null }); api.removeFiles([old]).catch(() => {}); refreshStorage(); toast('Cover photo removed.'); } catch (e) { toastError(e); }
+    const old = [asset.cover_path, asset.thumb_path].filter(Boolean);
+    try {
+      await updateRow('assets', asset.id, previewsOn() ? { cover_path: null, thumb_path: null } : { cover_path: null });
+      api.removeFiles(old).catch(() => {});
+      refreshStorage();
+      toast('Cover photo removed.');
+    } catch (e) { return toastError(e); }
+    // A video without a cover gets a small copy of a frame near the start instead.
+    if (previewsOn() && asset.media_type === 'video' && asset.storage_path) {
+      try { const small = await makePreviews({ ...asset, cover_path: null, thumb_path: null }); if (small.thumb_path) await updateRow('assets', asset.id, small); } catch { /* the grid falls back to the video itself */ }
+    }
   };
   return html`<section class="side-section">
     <h3>Cover photo</h3>

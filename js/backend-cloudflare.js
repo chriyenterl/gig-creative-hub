@@ -97,6 +97,7 @@ export function createCloudflareBackend(cfg, { portal = false } = {}) {
 
   return {
     mode: 'cloudflare',
+    previews: true, // library photos get small copies for fast loading (see js/previews.js)
 
     auth: {
       async getUser() {
@@ -242,7 +243,7 @@ export function createCloudflareBackend(cfg, { portal = false } = {}) {
         return call('linkSubmit', {
           linkToken, fileId: m.path, title: m.title, description: m.description,
           file_name: m.file_name, mime_type: m.mime_type, size_bytes: m.size_bytes, coverId: m.cover || null, caption: m.caption || null,
-          externalUrl: m.url || null, mediaType: m.media_type || null,
+          externalUrl: m.url || null, mediaType: m.media_type || null, thumbId: m.thumb || null, previewId: m.preview || null,
         });
       },
       submissions(linkToken) { return call('linkSubmissions', { linkToken }); },

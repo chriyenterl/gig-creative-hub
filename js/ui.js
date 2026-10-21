@@ -191,6 +191,7 @@ export function MediaThumb({ asset, url }) {
   const ref = useRef();
   const [seen, setSeen] = useState(false);
   const [broken, setBroken] = useState(false);
+  const [smallBroken, setSmallBroken] = useState(false);
   useEffect(() => {
     if (!ref.current || !('IntersectionObserver' in window)) return setSeen(true);
     const io = new IntersectionObserver(([e]) => { if (e.isIntersecting) { setSeen(true); io.disconnect(); } }, { rootMargin: '300px' });
@@ -200,14 +201,17 @@ export function MediaThumb({ asset, url }) {
   const kind = asset.media_type;
   const direct = api?.media?.(asset); // Google Drive: ready-made thumbnail links (videos included)
   const coverDirect = asset.cover_path && api?.media?.({ storage_path: asset.cover_path });
-  const coverUrls = useSignedUrls(asset.cover_path && !coverDirect ? [asset.cover_path] : []);
-  const cover = coverDirect ? coverDirect.thumb : asset.cover_path ? coverUrls[asset.cover_path] : null;
+  // The small copy (fast preview) when there is one; otherwise the cover photo, or the file itself.
+  const small = asset.thumb_path || (coverDirect ? null : asset.cover_path);
+  const coverUrls = useSignedUrls(small ? [small] : []);
+  const cover = asset.thumb_path ? coverUrls[small] : coverDirect ? coverDirect.thumb : asset.cover_path ? coverUrls[small] : null;
   if (direct) url = direct.thumb;
   const show = url && seen && !broken;
   let inner;
-  // A video's cover photo is used as its thumbnail. Images use the browser's own lazy loading;
-  // videos without a cover wait until scrolled into view (they're heavier).
-  if (cover && !broken) inner = html`<img src=${cover} alt="" loading="lazy" decoding="async" onError=${() => setBroken(true)} />`;
+  // The small copy (or a video's cover photo) is used as the thumbnail. Images use the browser's own lazy loading;
+  // videos without either wait until scrolled into view (they're heavier).
+  if (cover && !smallBroken) inner = html`<img src=${cover} alt="" loading="lazy" decoding="async" onError=${() => setSmallBroken(true)} />`;
+  else if (small && cover === undefined && !smallBroken) inner = html`<div class="thumb-ph"></div>`; // its address is on the way — don't start the big file
   else if (asset.external_url) inner = html`<div class="thumb-ph"><${Icon} name="link" size=${26} /><span>${linkHost(asset.external_url)}</span></div>`;
   else if (url && !broken && (kind === 'image' || direct)) inner = html`<img src=${url} alt="" loading="lazy" decoding="async" onError=${() => setBroken(true)} />`;
   else if (show && kind === 'video') inner = html`<video src=${url + '#t=0.5'} preload="metadata" muted playsinline onError=${() => setBroken(true)}></video>`;
@@ -224,10 +228,13 @@ export const linkHost = (url) => { try { return new URL(url).hostname.replace(/^
 export function MediaPreview({ asset }) {
   if (asset.external_url) return html`<${LinkPreview} asset=${asset} />`;
   const direct = api?.media?.(asset);
-  const urls = useSignedUrls(direct ? [] : [asset.storage_path, asset.cover_path].filter(Boolean));
-  const url = urls[asset.storage_path];
-  const poster = asset.cover_path ? urls[asset.cover_path] || undefined : undefined;
   const kind = asset.media_type;
+  // Photos show their medium-size copy (much quicker than the full original); Download still gives the original.
+  const main = kind === 'image' && asset.preview_path ? asset.preview_path : asset.storage_path;
+  const posterKey = asset.cover_path || asset.thumb_path;
+  const urls = useSignedUrls(direct ? [] : [main, posterKey].filter(Boolean));
+  const url = urls[main];
+  const poster = posterKey ? urls[posterKey] || undefined : undefined;
   if (direct && kind === 'image') return html`<div class="preview"><img src=${direct.full} alt=${asset.title} /></div>`;
   if (direct) return html`<div class="preview"><iframe src=${direct.embed} title=${asset.title} allow="autoplay; fullscreen" allowfullscreen></iframe></div>`;
   if (url && kind === 'image') return html`<div class="preview"><img src=${url} alt=${asset.title} /></div>`;

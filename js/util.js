@@ -3,7 +3,7 @@
 export const CATEGORIES = [
   { id: 'final', label: 'Final content', hint: 'Finished posts and videos, ready to publish' },
   { id: 'raw',   label: 'Raw footage',   hint: 'Unedited clips, B-roll, photo shoots, project files' },
-  { id: 'brand', label: 'Brand & menus', hint: 'Logos, mascot, fonts, colours and guidelines — plus the latest menus and price lists' },
+  { id: 'brand', label: 'Essentials',    hint: 'Logos, mascot, fonts, colours and guidelines — plus the latest menus and price lists' },
 ];
 export const categoryLabel = (id) => CATEGORIES.find((c) => c.id === id)?.label ?? id;
 

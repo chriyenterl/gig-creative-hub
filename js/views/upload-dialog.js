@@ -1,4 +1,4 @@
-// Team upload: add files to the library (brand & menus, raw footage, final content) — or add a link
+// Team upload: add files to the library (essentials, raw footage, final content) — or add a link
 // (Google Drive, Dropbox, WeTransfer…) instead of uploading.
 import { html, useState, useEffect } from '../lib.js';
 import { api, insertRow, getState, useStore, refreshStorage } from '../store.js';

@@ -2,7 +2,7 @@ import { html, useState, useMemo, useEffect } from '../lib.js';
 import { useStore, openAsset, updateRows, deleteAssets, api, talentById, seasonById, getState, reload } from '../store.js';
 import { go, CATEGORIES, ASSET_STATUS, MEDIA, fmtBytes, fmtDate, downloadCSV, categoryLabel, today, CHANNELS } from '../util.js';
 import {
-  Icon, PageHead, Tabs, MediaThumb, useSignedUrls, StatusPill, UsagePill, SeasonTag, SeasonSelect, TalentSelect,
+  Icon, PageHead, MediaThumb, useSignedUrls, StatusPill, UsagePill, SeasonTag, TalentSelect,
   Empty, Modal, Field, confirmDialog, toast, toastError,
 } from '../ui.js';
 import { UploadDialog } from './upload-dialog.js';
@@ -136,7 +136,6 @@ export function Library({ query }) {
   const tagCounts = {};
   inCat.forEach((a) => (a.tags || []).forEach((t) => (tagCounts[t] = (tagCounts[t] || 0) + 1)));
   const topTags = Object.entries(tagCounts).sort((a, b) => b[1] - a[1]).slice(0, 14);
-  const catCount = (c) => s.assets.filter((a) => (!c || a.category === c) && ofType(a)).length;
   const activeFilters = ['q', 'season', 'status', 'usage', 'talent', 'tag'].filter((k) => query[k]).length;
 
   const toggle = (id) => setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -163,7 +162,7 @@ export function Library({ query }) {
   const cat = CATEGORIES.find((c) => c.id === query.cat);
   const kind = MEDIA[query.type];
   const title = cat && kind ? `${cat.label} · ${kind.plural}` : cat ? cat.label : kind ? kind.plural : 'Content library';
-  const sub = cat ? cat.hint : kind ? `All your ${kind.plural.toLowerCase()} — narrow them down by season, tag, approval or talent below.`
+  const sub = cat ? cat.hint : kind ? `All your ${kind.plural.toLowerCase()} — search, or narrow them down by tag, talent or whether they've been used.`
     : 'Every photo, video and file in one place — search, filter, download and reuse.';
   return html`
     <${PageHead} title=${title} sub=${sub}>
@@ -175,36 +174,17 @@ export function Library({ query }) {
     <//>
     <${FastPreviews} />
 
-    <${Tabs} value=${query.cat || ''} onChange=${(c) => set({ cat: c, tag: '' })} items=${[
-      { id: '', label: 'All', count: catCount('') },
-      ...CATEGORIES.map((c) => ({ id: c.id, label: c.label, count: catCount(c.id) })),
-    ]} />
-
     <div class="filters">
       <label class="search">
         <${Icon} name="search" size=${16} />
         <input type="search" placeholder="Search title, talent, tag…" value=${query.q || ''} onInput=${(e) => set({ q: e.target.value })} />
       </label>
-      <select value=${query.type || ''} onChange=${(e) => set({ type: e.target.value })} aria-label="Type">
-        <option value="">All types</option>
-        ${Object.entries(MEDIA).map(([id, m]) => html`<option value=${id}>${m.plural}</option>`)}
-      </select>
-      <${SeasonSelect} allowAll value=${query.season || ''} onChange=${(v) => set({ season: v })} />
-      <select value=${query.status || ''} onChange=${(e) => set({ status: e.target.value })} aria-label="Status">
-        <option value="">Any status</option>
-        ${Object.entries(ASSET_STATUS).map(([id, st]) => html`<option value=${id}>${st.label}</option>`)}
-      </select>
       <select value=${query.usage || ''} onChange=${(e) => set({ usage: e.target.value })} aria-label="Usage">
         <option value="">Used or not</option>
         <option value="unused">Not used yet</option>
         <option value="used">Already used</option>
       </select>
       <${TalentSelect} value=${query.talent || ''} onChange=${(v) => set({ talent: v })} placeholder="All talents" />
-      <select value=${query.sort || ''} onChange=${(e) => set({ sort: e.target.value })} aria-label="Sort">
-        <option value="">Newest first</option>
-        <option value="most">Most used</option>
-        <option value="least">Least used</option>
-      </select>
     </div>
 
     ${topTags.length > 0 && html`<div class="chips">

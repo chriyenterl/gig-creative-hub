@@ -141,6 +141,31 @@ export async function makePreviews(asset, { source, cover, upload = { category: 
   }
 }
 
+// The frame a <video> is showing right now, as a cover photo file (up to 1600 px).
+export async function frameToFile(video, name = 'cover') {
+  const [w, h] = sizeOf(video);
+  if (!w || !h) throw new Error("The video hasn't loaded yet — wait a moment and try again.");
+  let blob;
+  try { blob = await shrink(video, ...previewSize([w, h]), PREVIEW.quality); } catch (e) {
+    throw new Error("Couldn't take a picture from this video here. Try another browser, or choose a photo instead.");
+  }
+  const base = safeName(stripExt(name)).slice(0, 60) || 'video';
+  return asFile(blob, `${base}-frame.jpg`);
+}
+
+// A photo already in the library, as a cover photo for a video. It's a separate copy (up to 1600 px, made from the
+// photo's medium copy when it has one), so deleting the video never touches the photo and the other way round.
+export async function coverFromLibrary(photo) {
+  const key = photo.preview_path || photo.storage_path;
+  const url = (await api.signedUrls([key]))[key];
+  if (!url) throw new Error('That photo is no longer in the library.');
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Could not load that photo. Please try again.');
+  const { preview } = await imagePreviews(await res.blob());
+  const base = safeName(stripExt(photo.file_name || photo.title || 'photo')).slice(0, 60) || 'photo';
+  return asFile(preview, `${base}-cover.jpg`);
+}
+
 // For a fresh upload: never lets a preview problem stop the upload itself.
 export async function previewsForUpload(file, kind, { cover, upload } = {}) {
   if (!previewsOn() || !['image', 'video'].includes(kind)) return {};

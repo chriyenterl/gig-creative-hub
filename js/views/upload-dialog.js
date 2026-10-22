@@ -5,7 +5,9 @@ import { api, insertRow, getState, useStore, refreshStorage } from '../store.js'
 import { CATEGORIES, mediaTypeFor, safeName, stripExt, uid, parseTags, fmtBytes, MEDIA } from '../util.js';
 import { Icon, Modal, Dropzone, Progress, Field, SeasonSelect, TalentSelect, StorageWarning, CoverPicker, Tabs, toast, toastError } from '../ui.js';
 import { normalizeLink } from '../print/model.js';
-import { previewsForUpload } from '../previews.js';
+import { previewsForUpload, previewsOn } from '../previews.js';
+import { PhotoPicker } from './photo-picker.js';
+import { FramePicker } from './frame-picker.js';
 
 const LINK_KINDS = [['video', 'Video'], ['image', 'Photo'], ['document', 'Document'], ['other', 'Other']];
 
@@ -20,6 +22,10 @@ export function UploadDialog({ onClose, defaults = {} }) {
   });
   const [running, setRunning] = useState(false);
   const [mode, setMode] = useState('files'); // 'files' | 'link'
+  const [pickFor, setPickFor] = useState(null); // which upload is choosing a cover from the library ('link' for the link form)
+  const fromLibrary = (id) => (previewsOn() ? () => setPickFor(id) : null);
+  const [frameFor, setFrameFor] = useState(null); // which upload is taking its cover from a moment in the video
+  const frameItem = items.find((x) => x.id === frameFor);
   const [link, setLink] = useState({ url: '', title: '', kind: 'video', caption: '', cover: null });
   const setL = (k) => (v) => setLink((x) => ({ ...x, [k]: v?.target ? v.target.value : v }));
   const { storage } = useStore();
@@ -163,7 +169,8 @@ export function UploadDialog({ onClose, defaults = {} }) {
         <select value=${link.kind} onChange=${setL('kind')}>${LINK_KINDS.map(([id, label]) => html`<option value=${id}>${label}</option>`)}</select><//>
       <${Field} label="Caption (optional)" wide><textarea rows="2" value=${link.caption} onInput=${setL('caption')} placeholder="e.g. the post text"></textarea><//>
       ${link.kind === 'video' && html`<div class="field field-wide"><span class="field-label">Cover photo (optional)</span>
-        <${CoverPicker} file=${link.cover} disabled=${running} onPick=${(f) => setL('cover')(f)} onRemove=${() => setL('cover')(null)} /></div>`}
+        <${CoverPicker} file=${link.cover} disabled=${running} onPick=${(f) => setL('cover')(f)} onRemove=${() => setL('cover')(null)}
+          onLibrary=${fromLibrary('link')} /></div>`}
     </div>` : html`
     <${Dropzone} onFiles=${addFiles}>
       <${Icon} name="upload" size=${28} />
@@ -181,7 +188,8 @@ export function UploadDialog({ onClose, defaults = {} }) {
           <textarea class="file-caption" rows="2" value=${it.caption} disabled=${it.state !== 'ready' && it.state !== 'error'}
             placeholder="Caption (optional) — e.g. the post text" aria-label="Caption" onInput=${(e) => patchItem(it.id, { caption: e.target.value })}></textarea>
           ${mediaTypeFor(it.file.type, it.file.name) === 'video' && html`<${CoverPicker} file=${it.cover} disabled=${it.state !== 'ready' && it.state !== 'error'}
-            onPick=${(f) => patchItem(it.id, { cover: f })} onRemove=${() => patchItem(it.id, { cover: null })} />`}
+            onPick=${(f) => patchItem(it.id, { cover: f })} onRemove=${() => patchItem(it.id, { cover: null })} onLibrary=${fromLibrary(it.id)}
+            onVideo=${previewsOn() ? () => setFrameFor(it.id) : null} />`}
           ${it.state === 'uploading' && html`<${Progress} value=${it.progress} />`}
           ${it.error && html`<span class="error-text small">${it.error}</span>`}
         </div>
@@ -190,5 +198,9 @@ export function UploadDialog({ onClose, defaults = {} }) {
           : html`<button class="icon-btn" aria-label="Remove" onClick=${() => setItems((xs) => xs.filter((x) => x.id !== it.id))}><${Icon} name="x" size=${16} /></button>`}
       </li>`)}
     </ul>`}`}
+    ${pickFor && html`<${PhotoPicker} onClose=${() => setPickFor(null)}
+      onPick=${(f) => (pickFor === 'link' ? setL('cover')(f) : patchItem(pickFor, { cover: f }))} />`}
+    ${frameItem && html`<${FramePicker} src=${frameItem.file} name=${frameItem.file.name} onClose=${() => setFrameFor(null)}
+      onPick=${(f) => patchItem(frameItem.id, { cover: f })} />`}
   <//>`;
 }

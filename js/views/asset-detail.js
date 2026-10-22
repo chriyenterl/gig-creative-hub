@@ -4,11 +4,16 @@ import { useStore, api, updateRow, deleteAssets, closeAsset, refreshAsset, refre
 import { ASSET_STATUS, CATEGORIES, MEDIA, CHANNELS, fmtBytes, fmtDate, timeAgo, parseTags, today, copyText, hrefFor, uid, safeName } from '../util.js';
 import { Icon, Modal, MediaPreview, Field, SeasonSelect, TalentSelect, CoverPicker, useSignedUrls, confirmDialog, toast, toastError, downloadAsset } from '../ui.js';
 import { makePreviews, previewsOn } from '../previews.js';
+import { PhotoPicker } from './photo-picker.js';
+import { FramePicker } from './frame-picker.js';
 
 // A video's cover photo: shown as its thumbnail in the library and before it plays.
 // Its small grid copy (thumb_path) is made from the cover, so it's replaced or removed together with it.
 function CoverBox({ asset }) {
   const [busy, setBusy] = useState(false);
+  const [choosing, setChoosing] = useState(false); // 'library' | 'video'
+  const videoUrls = useSignedUrls(choosing === 'video' && asset.storage_path ? [asset.storage_path] : []);
+  const videoUrl = videoUrls[asset.storage_path];
   const direct = asset.cover_path && api.media?.({ storage_path: asset.cover_path });
   const urls = useSignedUrls(asset.cover_path && !direct ? [asset.cover_path] : []);
   const src = direct ? direct.thumb : asset.cover_path ? urls[asset.cover_path] : null;
@@ -47,7 +52,11 @@ function CoverBox({ asset }) {
   return html`<section class="side-section">
     <h3>Cover photo</h3>
     <p class="muted small">Shown as the video's thumbnail and before it plays.</p>
-    <${CoverPicker} src=${src} busy=${busy} onPick=${pick} onRemove=${asset.cover_path ? remove : null} />
+    <${CoverPicker} src=${src} busy=${busy} onPick=${pick} onRemove=${asset.cover_path ? remove : null}
+      onLibrary=${previewsOn() ? () => setChoosing('library') : null}
+      onVideo=${previewsOn() && asset.storage_path && !asset.external_url ? () => setChoosing('video') : null} />
+    ${choosing === 'library' && html`<${PhotoPicker} onPick=${pick} onClose=${() => setChoosing(false)} />`}
+    ${choosing === 'video' && videoUrl && html`<${FramePicker} src=${videoUrl} name=${asset.file_name || asset.title} onPick=${pick} onClose=${() => setChoosing(false)} />`}
   </section>`;
 }
 

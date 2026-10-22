@@ -290,7 +290,9 @@ export function StorageWarning({ storage, settingsHref = '#/settings', print = f
 }
 
 // ── Cover photo for a video (choose / change / remove) ────────────────────
-export function CoverPicker({ file, src, onPick, onRemove, disabled, busy }) {
+// onLibrary / onVideo (optional): also offer "From library" (one of the Creative Hub's own photos)
+// and "From video" (a moment from the video itself).
+export function CoverPicker({ file, src, onPick, onRemove, onLibrary, onVideo, disabled, busy }) {
   const input = useRef();
   const [preview, setPreview] = useState(null);
   useEffect(() => {
@@ -303,7 +305,11 @@ export function CoverPicker({ file, src, onPick, onRemove, disabled, busy }) {
   return html`<div class="cover-picker">
     <span class="cover-thumb">${shown ? html`<img src=${shown} alt="Cover photo" />` : html`<${Icon} name="image" size=${18} />`}</span>
     <button type="button" class="btn btn-sm" disabled=${disabled || busy} onClick=${() => input.current.click()}>
-      <${Icon} name="image" size=${14} />${busy ? 'Uploading…' : shown ? 'Change cover photo' : 'Add cover photo'}</button>
+      <${Icon} name="upload" size=${14} />${busy ? 'Uploading…' : onLibrary || onVideo ? 'From Files' : shown ? 'Change cover photo' : 'Add cover photo'}</button>
+    ${onLibrary && html`<button type="button" class="btn btn-sm" disabled=${disabled || busy} onClick=${onLibrary}>
+      <${Icon} name="image" size=${14} />From library</button>`}
+    ${onVideo && html`<button type="button" class="btn btn-sm" disabled=${disabled || busy} onClick=${onVideo}>
+      <${Icon} name="video" size=${14} />From video</button>`}
     ${shown && onRemove && html`<button type="button" class="btn btn-sm btn-ghost" disabled=${disabled || busy} onClick=${onRemove}>Remove</button>`}
     <input ref=${input} type="file" accept="image/*" hidden onChange=${(e) => { const f = e.target.files[0]; e.target.value = ''; if (f) onPick(f); }} />
   </div>`;

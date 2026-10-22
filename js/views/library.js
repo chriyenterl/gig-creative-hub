@@ -1,4 +1,4 @@
-import { html, useState, useMemo, useEffect } from '../lib.js';
+import { html, useState, useMemo, useEffect, useRef } from '../lib.js';
 import { useStore, openAsset, updateRows, deleteAssets, api, talentById, seasonById, getState, reload } from '../store.js';
 import { go, CATEGORIES, ASSET_STATUS, MEDIA, fmtBytes, fmtDate, downloadCSV, categoryLabel, today, CHANNELS } from '../util.js';
 import {
@@ -64,11 +64,14 @@ export function UsageDialog({ assets, onClose }) {
   <//>`;
 }
 
-function BulkBar({ selected, clear }) {
+// The selection bar: pinned at the top while you scroll, so you can keep selecting, act on the
+// selection and finish ("Done") from anywhere in the list. After an action you stay in select mode.
+function BulkBar({ selected, clear, done, selectAll, total }) {
   const [usage, setUsage] = useState(false);
   const { assets } = useStore();
   const rows = assets.filter((a) => selected.has(a.id));
   const ids = rows.map((a) => a.id);
+  const none = !rows.length;
   const apply = async (patch, msg) => {
     try { await updateRows('assets', ids, patch); toast(msg); } catch (e) { toastError(e); }
   };
@@ -79,36 +82,58 @@ function BulkBar({ selected, clear }) {
     try { await deleteAssets(rows); toast('Deleted.'); clear(); } catch (e) { toastError(e); }
   };
   return html`<div class="bulk-bar">
-    <b>${rows.length} selected</b>
-    <select value="" onChange=${pick((v) => apply({ status: v, reviewed_at: new Date().toISOString() }, 'Status updated.'))}>
-      <option value="">Set status…</option>
-      ${Object.entries(ASSET_STATUS).map(([id, s]) => html`<option value=${id}>${s.label}</option>`)}
-    </select>
-    <select value="" onChange=${pick((v) => apply({ season_id: v === 'none' ? null : v }, 'Season updated.'))}>
-      <option value="">Move to season…</option>
-      <option value="none">Evergreen (no season)</option>
-      ${getState().seasons.map((s) => html`<option value=${s.id}>${s.name}</option>`)}
-    </select>
-    <select value="" onChange=${pick((v) => apply({ category: v }, 'Moved.'))}>
-      <option value="">File under…</option>
-      ${CATEGORIES.map((c) => html`<option value=${c.id}>${c.label}</option>`)}
-    </select>
-    <button class="btn btn-sm" onClick=${() => setUsage(true)}><${Icon} name="check" size=${14} />Mark as used</button>
-    <button class="btn btn-sm btn-ghost-danger" onClick=${remove}><${Icon} name="trash" size=${14} />Delete</button>
-    <span class="spacer"></span>
-    <button class="btn btn-sm btn-ghost" onClick=${clear}>Clear selection</button>
+    <div class="bulk-top">
+      <b>${none ? 'Tap items to select them' : `${rows.length} selected`}</b>
+      ${rows.length < total && html`<button class="btn btn-sm btn-ghost" onClick=${selectAll}>Select all ${total}</button>`}
+      <span class="spacer"></span>
+      ${!none && html`<button class="btn btn-sm btn-ghost" onClick=${clear}>Clear</button>`}
+      <button class="btn btn-sm btn-primary" onClick=${done}><${Icon} name="check" size=${14} />Done</button>
+    </div>
+    <div class="bulk-actions">
+      <select value="" disabled=${none} onChange=${pick((v) => apply({ status: v, reviewed_at: new Date().toISOString() }, 'Status updated.'))}>
+        <option value="">Set status…</option>
+        ${Object.entries(ASSET_STATUS).map(([id, s]) => html`<option value=${id}>${s.label}</option>`)}
+      </select>
+      <select value="" disabled=${none} onChange=${pick((v) => apply({ season_id: v === 'none' ? null : v }, 'Season updated.'))}>
+        <option value="">Move to season…</option>
+        <option value="none">Evergreen (no season)</option>
+        ${getState().seasons.map((s) => html`<option value=${s.id}>${s.name}</option>`)}
+      </select>
+      <select value="" disabled=${none} onChange=${pick((v) => apply({ category: v }, 'Moved.'))}>
+        <option value="">File under…</option>
+        ${CATEGORIES.map((c) => html`<option value=${c.id}>${c.label}</option>`)}
+      </select>
+      <button class="btn btn-sm" disabled=${none} onClick=${() => setUsage(true)}><${Icon} name="check" size=${14} />Mark as used</button>
+      <button class="btn btn-sm btn-ghost-danger" disabled=${none} onClick=${remove}><${Icon} name="trash" size=${14} />Delete</button>
+    </div>
     ${usage && html`<${UsageDialog} assets=${rows} onClose=${() => setUsage(false)} />`}
   </div>`;
 }
 
-export function AssetCard({ asset, url, selecting, selected, onToggle }) {
+// onStartSelect (optional): start selecting from this tile — its tick on a computer, or a long press on a phone.
+export function AssetCard({ asset, url, selecting, selected, onToggle, onStartSelect }) {
   const talent = talentById(asset.talent_id);
-  const click = () => (selecting ? onToggle(asset.id) : openAsset(asset.id));
-  return html`<div class=${'asset-card' + (selected ? ' selected' : '')} role="button" tabindex="0"
-      onClick=${click} onKeyDown=${(e) => e.key === 'Enter' && click()}>
+  const timer = useRef(null);
+  const longPressed = useRef(false);
+  const click = () => {
+    if (longPressed.current) { longPressed.current = false; return; } // the long press already selected it
+    selecting ? onToggle(asset.id) : openAsset(asset.id);
+  };
+  const pressStart = (e) => {
+    longPressed.current = false;
+    if (selecting || !onStartSelect || e.pointerType === 'mouse') return;
+    timer.current = setTimeout(() => { longPressed.current = true; navigator.vibrate?.(15); onStartSelect(asset.id); }, 450);
+  };
+  const pressEnd = () => clearTimeout(timer.current);
+  const tick = (e) => { e.stopPropagation(); selecting ? onToggle(asset.id) : onStartSelect(asset.id); };
+  return html`<div class=${'asset-card' + (selected ? ' selected' : '') + (selecting ? ' selecting' : '')} role="button" tabindex="0"
+      onClick=${click} onKeyDown=${(e) => e.key === 'Enter' && click()}
+      onPointerDown=${pressStart} onPointerUp=${pressEnd} onPointerLeave=${pressEnd} onPointerCancel=${pressEnd}
+      onContextMenu=${(e) => onStartSelect && e.pointerType !== 'mouse' && e.preventDefault()}>
     <${MediaThumb} asset=${asset} url=${url} />
     <span class="thumb-status"><${StatusPill} status=${asset.status} /></span>
-    ${selecting && html`<span class=${'check' + (selected ? ' on' : '')}><${Icon} name="check" size=${14} /></span>`}
+    ${(selecting || onStartSelect) && html`<button type="button" class=${'check' + (selected ? ' on' : '') + (selecting ? '' : ' hover-only')}
+      aria-pressed=${!!selected} aria-label=${selected ? 'Unselect' : 'Select'} onClick=${tick}><${Icon} name="check" size=${14} /></button>`}
     <div class="asset-meta">
       <div class="asset-title" title=${asset.title}>${asset.title}</div>
       <div class="asset-sub"><${SeasonTag} season=${seasonById(asset.season_id)} />${talent && html`<span>· ${talent.name}</span>`}</div>
@@ -140,6 +165,13 @@ export function Library({ query }) {
 
   const toggle = (id) => setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const stopSelecting = () => { setSelecting(false); setSelected(new Set()); };
+  const startSelecting = (id) => { setSelecting(true); setSelected(new Set(id ? [id] : [])); };
+  // Items that disappear (deleted, or filtered out) drop out of the selection.
+  useEffect(() => setSelected((prev) => {
+    const live = new Set(filtered.map((a) => a.id));
+    const next = new Set([...prev].filter((id) => live.has(id)));
+    return next.size === prev.size ? prev : next;
+  }), [filtered]);
 
   const exportCsv = () => downloadCSV(`content-${today()}.csv`, filtered, [
     { label: 'Title', value: 'title' },
@@ -167,7 +199,7 @@ export function Library({ query }) {
   return html`
     <${PageHead} title=${title} sub=${sub}>
       <button class="btn btn-ghost" onClick=${exportCsv}><${Icon} name="download" size=${16} />Export list</button>
-      <button class=${'btn' + (selecting ? ' btn-active' : '')} onClick=${() => (selecting ? stopSelecting() : setSelecting(true))}>
+      <button class=${'btn' + (selecting ? ' btn-active' : '')} onClick=${() => (selecting ? stopSelecting() : startSelecting())}>
         <${Icon} name="select" size=${16} />${selecting ? 'Done' : 'Select'}
       </button>
       <button class="btn btn-primary" onClick=${() => setUploading(true)}><${Icon} name="upload" size=${16} />Upload</button>
@@ -195,14 +227,14 @@ export function Library({ query }) {
     <div class="result-line">
       <span>${filtered.length} ${filtered.length === 1 ? 'item' : 'items'}</span>
       ${activeFilters > 0 && html`<button class="link" onClick=${() => go('library', { cat: query.cat, type: query.type }, { replace: true })}>Clear filters</button>`}
-      ${selecting && html`<button class="link" onClick=${() => setSelected(new Set(filtered.map((a) => a.id)))}>Select all ${filtered.length}</button>`}
     </div>
 
-    ${selecting && selected.size > 0 && html`<${BulkBar} selected=${selected} clear=${stopSelecting} />`}
+    ${selecting && html`<${BulkBar} selected=${selected} total=${filtered.length} clear=${() => setSelected(new Set())} done=${stopSelecting}
+      selectAll=${() => setSelected(new Set(filtered.map((a) => a.id)))} />`}
 
     ${visible.length ? html`<div class="asset-grid">
         ${visible.map((a) => html`<${AssetCard} key=${a.id} asset=${a} url=${urls[a.storage_path]}
-          selecting=${selecting} selected=${selected.has(a.id)} onToggle=${toggle} />`)}
+          selecting=${selecting} selected=${selected.has(a.id)} onToggle=${toggle} onStartSelect=${startSelecting} />`)}
       </div>
       ${filtered.length > limit && html`<div class="more"><button class="btn" onClick=${() => setLimit(limit + PAGE)}>Show more (${filtered.length - limit} left)</button></div>`}`
     : html`<${Empty} icon="image" title="Nothing matches">${s.assets.length ? 'Try clearing some filters.' : 'Upload your first files to get started.'}<//>`}

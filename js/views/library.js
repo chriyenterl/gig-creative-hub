@@ -199,9 +199,6 @@ export function Library({ query }) {
   return html`
     <${PageHead} title=${title} sub=${sub}>
       <button class="btn btn-ghost" onClick=${exportCsv}><${Icon} name="download" size=${16} />Export list</button>
-      <button class=${'btn' + (selecting ? ' btn-active' : '')} onClick=${() => (selecting ? stopSelecting() : startSelecting())}>
-        <${Icon} name="select" size=${16} />${selecting ? 'Done' : 'Select'}
-      </button>
       <button class="btn btn-primary" onClick=${() => setUploading(true)}><${Icon} name="upload" size=${16} />Upload</button>
     <//>
     <${FastPreviews} />

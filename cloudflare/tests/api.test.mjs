@@ -59,6 +59,14 @@ const upd = await data('update', { token: T, table: 'talents', id: tal.id, patch
 ok(upd.status === 'approved' && upd.followers === 15000 && upd.id === tal.id, 'update works and ignores id changes');
 ok((await data('list', { token: T, table: 'talents', eq: { id: tal.id } }))[0].status === 'approved', 'list with eq filter');
 ok((await api('insert', { token: T, table: 'seasons', row: { name: 'new year' } })).ok === false, 'duplicate season name refused (case-insensitive)');
+{
+  const cs = await data('insert', { token: T, table: 'seasons', row: { name: 'Brand colour test', color: '#FF3D7F' } });
+  ok(cs.color === '#FF3D7F', 'a season can have any colour code');
+  ok((await api('insert', { token: T, table: 'seasons', row: { name: 'Bad colour', color: 'red; x' } })).ok === false, 'a season colour must be a colour code');
+  ok((await data('update', { token: T, table: 'seasons', id: cs.id, patch: { color: '#0ea5e9' } })).color === '#0ea5e9', 'colour can be changed');
+  ok((await api('update', { token: T, table: 'seasons', id: cs.id, patch: { color: 'url(x)' } })).ok === false, '...but only to a colour code');
+  await data('remove', { token: T, table: 'seasons', id: cs.id });
+}
 ok((await api('list', { token: T, table: 'settings' })).ok === false, 'internal tables are not exposed');
 
 console.log('Team uploads (R2)');

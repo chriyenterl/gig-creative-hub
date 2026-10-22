@@ -1045,3 +1045,22 @@ html { touch-action: manipulation; }
   .bulk-actions > * { flex: none; }
 }
 @media (max-width: 860px) and (display-mode: standalone) { .bulk-bar { top: calc(64px + env(safe-area-inset-top)); } }
+
+/* ── Season colours: palette of shades + any custom colour ─────────────── */
+.palette { display: flex; flex-direction: column; gap: 8px; }
+.palette-row { display: flex; align-items: center; gap: 10px; }
+.palette-label { width: 44px; flex: none; font-size: 12px; color: var(--muted); font-weight: 600; }
+.palette .swatch-pick { gap: 6px; }
+.palette .swatch-btn { width: 28px; height: 28px; }
+.custom-colour { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.custom-colour .muted { flex: 1 1 200px; }
+.swatch-custom { position: relative; display: grid; place-items: center; color: #fff; cursor: pointer; overflow: hidden; flex: none; width: 36px; height: 36px; }
+.swatch-custom .icon { filter: drop-shadow(0 0 2px rgba(0, 0, 0, .6)); pointer-events: none; }
+.swatch-custom input[type="color"] { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; border: 0; padding: 0; min-height: 0; }
+.hex-input { width: 110px; flex: none; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: lowercase; }
+.season-preview { display: flex; align-items: center; gap: 12px; padding: 12px 14px 12px 0; border-radius: var(--radius-sm); background: var(--surface-2); border: 1px solid var(--line); overflow: hidden; }
+.season-preview-stripe { width: 6px; align-self: stretch; margin: -12px 0; flex: none; }
+@media (max-width: 560px) {
+  .palette-row { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .palette .swatch-btn { width: 30px; height: 30px; }
+}

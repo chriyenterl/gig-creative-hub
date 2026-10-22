@@ -3,13 +3,30 @@ import { useStore, insertRow, updateRow, deleteAndUnlink } from '../store.js';
 import { hrefFor, EVERGREEN, fmtNum } from '../util.js';
 import { Icon, PageHead, Modal, Field, confirmDialog, toast, toastError } from '../ui.js';
 
-const SWATCHES = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7', '#e34948', '#0b0b0b', '#898781'];
+// 15 colour families in a light, a bright and a dark shade — or any colour at all (colour wheel or a colour code).
+const FAMILIES = [
+  ['Red', '#fca5a5', '#ef4444', '#991b1b'], ['Rose', '#fda4af', '#f43f5e', '#9f1239'], ['Pink', '#f9a8d4', '#ec4899', '#9d174d'],
+  ['Purple', '#d8b4fe', '#a855f7', '#6b21a8'], ['Indigo', '#a5b4fc', '#6366f1', '#3730a3'], ['Blue', '#93c5fd', '#3b82f6', '#1e40af'],
+  ['Sky', '#7dd3fc', '#0ea5e9', '#075985'], ['Teal', '#5eead4', '#14b8a6', '#115e59'], ['Green', '#86efac', '#22c55e', '#166534'],
+  ['Lime', '#bef264', '#84cc16', '#3f6212'], ['Yellow', '#fde047', '#eab308', '#854d0e'], ['Amber', '#fcd34d', '#f59e0b', '#92400e'],
+  ['Orange', '#fdba74', '#f97316', '#9a3412'], ['Brown', '#e7c9a9', '#a0703e', '#5c3a1e'], ['Grey', '#d4d4d8', '#71717a', '#27272a'],
+];
+const SHADES = ['Light', 'Bright', 'Dark'];
+const PALETTE = FAMILIES.flatMap((f) => f.slice(1));
+const toHex = (v) => {
+  let c = String(v || '').trim().toLowerCase();
+  if (c && !c.startsWith('#')) c = '#' + c;
+  if (/^#[0-9a-f]{3}$/.test(c)) c = '#' + [...c.slice(1)].map((x) => x + x).join('');
+  return /^#[0-9a-f]{6}$/.test(c) ? c : null;
+};
 
 function SeasonForm({ season, onClose }) {
   const { seasons } = useStore();
   const [name, setName] = useState(season?.name || '');
-  const [color, setColor] = useState(season?.color || SWATCHES[seasons.length % SWATCHES.length]);
+  const [color, setColor] = useState(toHex(season?.color) || FAMILIES[seasons.length % FAMILIES.length][2]);
+  const [code, setCode] = useState(color);
   const [busy, setBusy] = useState(false);
+  const choose = (c) => { setColor(c); setCode(c); };
   const save = async () => {
     if (!name.trim()) return toast('Give the season a name.', 'error');
     setBusy(true);
@@ -20,17 +37,40 @@ function SeasonForm({ season, onClose }) {
       onClose();
     } catch (e) { toastError(e); setBusy(false); }
   };
-  return html`<${Modal} title=${season ? 'Edit season' : 'New season'} size="sm" onClose=${onClose}
+  const custom = !PALETTE.includes(color);
+  return html`<${Modal} title=${season ? 'Edit season' : 'New season'} size="md" onClose=${onClose}
     footer=${html`<button class="btn" onClick=${onClose}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button>`}>
     <div class="form-grid">
       <${Field} label="Name" wide><input value=${name} autofocus placeholder="e.g. Chinese New Year 2027" onInput=${(e) => setName(e.target.value)}
         onKeyDown=${(e) => e.key === 'Enter' && save()} /><//>
-      <${Field} label="Colour" wide>
-        <div class="swatch-pick">
-          ${SWATCHES.map((c) => html`<button type="button" class=${'swatch-btn' + (c === color ? ' on' : '')} style=${{ background: c }}
-            aria-label=${c} aria-pressed=${c === color} onClick=${() => setColor(c)}></button>`)}
+      <div class="field field-wide"><span class="field-label">Colour</span>
+        <div class="palette" role="radiogroup" aria-label="Colour">
+          ${SHADES.map((shade, i) => html`<div class="palette-row" key=${shade}>
+            <span class="palette-label">${shade}</span>
+            <div class="swatch-pick">${FAMILIES.map((f) => html`<button type="button" class=${'swatch-btn' + (f[i + 1] === color ? ' on' : '')}
+              style=${{ background: f[i + 1] }} role="radio" aria-checked=${f[i + 1] === color} aria-label=${`${shade} ${f[0].toLowerCase()}`}
+              data-tip=${`${shade} ${f[0].toLowerCase()}`} onClick=${() => choose(f[i + 1])}></button>`)}</div>
+          </div>`)}
         </div>
-      <//>
+      </div>
+      <div class="field field-wide"><span class="field-label">Or any colour you like</span>
+        <div class="custom-colour">
+          <label class=${'swatch-btn swatch-custom' + (custom ? ' on' : '')} style=${{ background: color }} data-tip="Pick any colour">
+            <input type="color" value=${color} aria-label="Pick any colour" onInput=${(e) => choose(e.target.value)} />
+            <${Icon} name="edit" size=${13} />
+          </label>
+          <input class="hex-input" value=${code} maxlength="7" spellcheck="false" autocapitalize="off" aria-label="Colour code"
+            placeholder="#ff3d7f" onInput=${(e) => { setCode(e.target.value); const c = toHex(e.target.value); if (c) setColor(c); }} />
+          <span class="muted small">Tap the circle for the colour wheel, or type a colour code (e.g. your brand colour).</span>
+        </div>
+      </div>
+      <div class="field field-wide"><span class="field-label">Preview</span>
+        <div class="season-preview">
+          <span class="season-preview-stripe" style=${{ background: color }}></span>
+          <b>${name.trim() || 'New season'}</b>
+          <span class="season-tag"><span class="dot" style=${{ background: color }}></span>${name.trim() || 'New season'}</span>
+        </div>
+      </div>
     </div>
   <//>`;
 }

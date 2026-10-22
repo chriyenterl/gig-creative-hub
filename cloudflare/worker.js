@@ -391,6 +391,7 @@ async function apiInsert(t, row, me) {
   if (t === 'seasons') {
     const dup = await DB.prepare('SELECT 1 FROM seasons WHERE lower(name) = lower(?)').bind(String(row.name || '')).first();
     if (dup) fail('That already exists.');
+    checkColour(row.color);
   }
   if (t === 'assets' && row.external_url) { // a link (Google Drive, Dropbox, WeTransfer…) instead of an uploaded file
     row.external_url = cleanLink(row.external_url);
@@ -415,6 +416,9 @@ async function apiInsert(t, row, me) {
   if (t === 'asset_usage') await syncUsage(created.asset_id);
   return clean(t, created);
 }
+
+// A season's colour is a colour code like #ff3d7f (from the palette, the colour wheel or typed in).
+const checkColour = (c) => { if (c != null && !/^#[0-9a-f]{3}([0-9a-f]{3})?$/i.test(String(c))) fail('Pick a colour, or type a colour code like #ff3d7f.'); };
 
 async function apiUpdate(t, id, patch) {
   checkTable(t);
@@ -442,6 +446,7 @@ async function apiUpdate(t, id, patch) {
       else if (!(patch.external_url = cleanLink(patch.external_url))) fail("That link doesn't look right — copy the whole link (it usually starts with https://).");
     }
   }
+  if (t === 'seasons' && patch.color !== undefined) checkColour(patch.color);
   if (t === 'upload_links') {
     delete patch.folder_id;
     if (patch.token !== undefined) patch.token = newKey(); // "Change link": the server makes the new code

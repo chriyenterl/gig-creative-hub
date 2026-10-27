@@ -22,7 +22,7 @@
 const TOKEN_DAYS = 30;           // how long a team login lasts
 const PBKDF2_ROUNDS = 20000;     // password hashing strength (kept modest for the free plan's CPU limit)
 const CHUNK = 10 * 1024 * 1024;  // upload part size — big files are sent in pieces of this size
-const SCHEMA_V = '10';            // bump when SCHEMA changes so new columns get added
+const SCHEMA_V = '11';            // bump when SCHEMA changes so new columns get added
 const GB = 1e9;                  // storage is counted the way Cloudflare bills it (1 GB = 1,000,000,000 bytes)
 const DEFAULT_LIMIT_GB = 10;     // uploads stop here (R2's free allowance) — change it in Settings
 
@@ -44,8 +44,8 @@ const SCHEMA = {
                   num: ['size_bytes', 'use_count'], arr: ['tags'] },
   asset_usage:  { cols: ['id', 'asset_id', 'channel', 'note', 'used_on', 'created_by', 'created_at'] },
   print_orders: { cols: ['id', 'order_no', 'status', 'customer_name', 'company', 'phone', 'email', 'summary', 'quantity',
-                         'due_date', 'answers', 'history', 'internal_notes', 'created_at', 'updated_at'],
-                  json: ['answers', 'history'] },
+                         'due_date', 'answers', 'history', 'internal_notes', 'steps', 'created_at', 'updated_at'],
+                  json: ['answers', 'history', 'steps'] },
   // The team (everyone except owners): they join with a name + 6-digit passcode and the owner approves them.
   // hub_access = true opens the Creative Hub as well as the Print Hub. link_key = their personal sign-in link.
   // email is only used to send a "forgot passcode" link (reset_hash / reset_exp hold that one-time link).
@@ -240,6 +240,13 @@ async function setup() {
   }
   // Team members made before joining existed count as approved.
   await DB.prepare("UPDATE print_staff SET status = 'approved' WHERE status IS NULL").run();
+  // Open orders made before production steps existed get theirs (lamination / cutting) now.
+  try {
+    for (const o of await readTable('print_orders', "WHERE status <> 'completed' AND steps IS NULL")) {
+      const steps = makeSteps(finishingFor(o.answers, o.summary));
+      if (steps) await DB.prepare('UPDATE print_orders SET steps = ? WHERE id = ?').bind(JSON.stringify(steps), o.id).run();
+    }
+  } catch (e) { console.error('steps for open orders', e); } // never stops the app from starting
   await DB.batch(INDEXES.map((s) => DB.prepare(s)));
   if ((await count('seasons')) === 0) {
     await insertRows('seasons', SEED_SEASONS.map((s, i) => ({ name: s[0], color: s[1], sort_order: i + 1 })));
@@ -1091,6 +1098,23 @@ async function linkSubmissions(token) {
 //  Anyone signed in to the Creative Hub is treated as master.
 // ════════════════════════════════════════════════════════════════════════════
 const PRINT_STATUSES = ['new', 'pending', 'completed'];
+
+// Production steps (same rules as js/print/model.js): an order that needs lamination (the customer chose it)
+// or cutting (stickers / labels) goes Printing → waiting for lamination / cutting → Completed, and ticking
+// the last step completes it. Other orders keep the plain New → Pending → Completed.
+const STEP_ORDER = ['print', 'laminate', 'cut'];
+const saidYes = (v) => (Array.isArray(v) ? v : [v]).some((x) => /^\s*yes\b/i.test(String(x == null ? '' : x)));
+function finishingFor(answers, summary) {
+  const out = [];
+  if ((answers || []).some((a) => !a.hidden && (a.id === 'q_lamination' || /laminat/i.test(a.label || '')) && saidYes(a.value))) out.push('laminate');
+  if (/sticker|label/i.test(summary || '')) out.push('cut');
+  return out;
+}
+function makeSteps(finishing, prev) {
+  if (!finishing || !finishing.length) return null;
+  return STEP_ORDER.filter((id) => id === 'print' || finishing.includes(id))
+    .map((id) => { const p = (prev || []).find((x) => x.id === id); return { id, at: (p && p.at) || null, by: (p && p.by) || null }; });
+}
 const NOT_STICKER_OR_BANNER = { q: 'q_item', op: 'not_in', values: ['Stickers / labels', 'Banner / bunting'] };
 const DEFAULT_PRINT_QUESTIONS = [
   { id: 'q_name', label: 'Your name', type: 'text', required: true, role: 'name' },
@@ -1384,6 +1408,8 @@ async function createOrder(answersIn, filesIn, { strict, by, status = 'new', not
   row.answers = answers;
   row.history = [{ status: 'new', at: nowIso(), by, ...(strict ? {} : { added: true }) }];
   if (row.status !== 'new') row.history.push({ status: row.status, at: nowIso(), by });
+  row.steps = makeSteps(finishingFor(answers, row.summary));
+  if (row.steps && row.status === 'completed') row.steps.forEach((x) => { x.at = nowIso(); x.by = by || null; });
   if (notes) row.internal_notes = String(notes).slice(0, 20000);
   return insertRow('print_orders', row);
 }
@@ -1398,11 +1424,35 @@ async function printUpdate(actor, id, patch) {
   const o = await findOrder(id);
   const p = {};
   const history = o.history || [];
-  if (patch.status && PRINT_STATUSES.includes(patch.status) && patch.status !== o.status) {
-    p.status = patch.status;
-    history.push({ status: patch.status, at: nowIso(), by: actor.who });
+  const at = nowIso();
+  // Which finishing steps this order needs (staff can change what the order form decided).
+  if (patch.finishing && typeof patch.finishing === 'object') {
+    const fin = ['laminate', 'cut'].filter((k) => patch.finishing[k]);
+    o.steps = p.steps = makeSteps(fin, o.steps);
+    history.push({ event: 'finishing', steps: fin, at, by: actor.who });
+    p.history = history;
+  }
+  let status = patch.status && PRINT_STATUSES.includes(patch.status) ? patch.status : null;
+  if (patch.step) { // a production step ticked (or un-ticked): the status follows
+    const s = (o.steps || []).find((x) => x.id === patch.step);
+    if (!s) fail("This order doesn't have that step.");
+    const done = patch.done !== false;
+    if (done && !s.at) { s.at = at; s.by = actor.who || null; history.push({ event: 'step', step: s.id, at, by: actor.who }); }
+    if (!done && s.at) { s.at = null; s.by = null; history.push({ event: 'step', step: s.id, undone: true, at, by: actor.who }); }
+    p.steps = o.steps;
+    p.history = history;
+    status = o.steps.every((x) => x.at) ? 'completed' : o.steps.some((x) => x.at) || o.status === 'completed' ? 'pending' : o.status;
+  } else if (status && status !== o.status && o.steps && o.steps.length) { // moved by hand: keep the steps in line
+    if (status === 'completed') o.steps.forEach((x) => { if (!x.at) { x.at = at; x.by = actor.who || null; } });
+    else if (status === 'new') o.steps.forEach((x) => { x.at = null; x.by = null; });
+    else if (status === 'pending' && o.status === 'completed') { const last = [...o.steps].reverse().find((x) => x.at); if (last) { last.at = null; last.by = null; } }
+    p.steps = o.steps;
+  }
+  if (status && status !== o.status) {
+    p.status = status;
+    history.push({ status, at, by: actor.who });
     const ps = await printSettings();
-    if (patch.status === 'completed' && patch.notify !== false && ps.webhookUrl && ps.notifyOnDone) history.push(await notify('completed', o, false));
+    if (status === 'completed' && patch.notify !== false && ps.webhookUrl && ps.notifyOnDone) history.push(await notify('completed', o, false));
     p.history = history;
   }
   if (patch.whatsapp) { // staff opened WhatsApp with a message for the customer

@@ -2,7 +2,8 @@
 // browser (localStorage for data, IndexedDB for uploaded files). Used when
 // config.js has no Supabase details, so you can click around before setting up.
 import { uid, newToken, today, fmtGB } from './util.js';
-import { DEFAULT_QUESTIONS, DEFAULT_READY_MESSAGE, DEFAULT_NEW_MESSAGE, notifyPayload, isVisible, isBlank, normalizeLink } from './print/model.js';
+import { DEFAULT_QUESTIONS, DEFAULT_READY_MESSAGE, DEFAULT_NEW_MESSAGE, notifyPayload, isVisible, isBlank, normalizeLink,
+  finishingFor, makeSteps, applyStep, stepsForStatus } from './print/model.js';
 
 const KEY = 'mediahub-demo-v1';
 const USER = { email: 'you@demo.team' };
@@ -561,6 +562,11 @@ export function createDemoBackend() {
               pdb = x;
               psave();
             }
+            if (x.orders.some((o) => o.steps === undefined)) { // saved before production steps existed
+              x.orders.forEach((o) => { if (o.steps === undefined) o.steps = o.status === 'completed' ? null : makeSteps(finishingFor(o.answers, o.summary)); });
+              pdb = x;
+              psave();
+            }
             return (pdb = x);
           }
         } catch {}
@@ -628,6 +634,8 @@ export function createDemoBackend() {
         if (st !== 'new') history.push({ status: st, at: now, by });
         const order = { id: uid(), order_no: 'P-' + d.settings.nextNo, status: st, customer_name: null, company: null, phone: null, email: null,
           summary: null, quantity: null, due_date: null, ...row, answers, history, internal_notes: notes || null, created_at: now, updated_at: now };
+        order.steps = makeSteps(finishingFor(answers, order.summary));
+        if (order.steps && st === 'completed') order.steps.forEach((x) => { x.at = now; x.by = by; });
         d.settings.nextNo += 1;
         d.orders.unshift(order);
         if (bot && d.settings.webhookUrl && d.settings.notifyOnNew) order.history.push(await notify('created', order, false));
@@ -691,11 +699,20 @@ export function createDemoBackend() {
           await wait();
           const r = actor(key).who;
           const o = find(id);
-          if (patch.status && patch.status !== o.status) {
-            o.history = [...(o.history || []), { status: patch.status, at: new Date().toISOString(), by: r }];
+          o.history = o.history || [];
+          if (patch.finishing) { // which finishing steps the order needs
+            const fin = ['laminate', 'cut'].filter((k) => patch.finishing[k]);
+            o.steps = makeSteps(fin, o.steps);
+            o.history.push({ event: 'finishing', steps: fin, at: new Date().toISOString(), by: r });
+          }
+          let status = patch.status;
+          if (patch.step) status = applyStep(o, patch.step, patch.done !== false, r);
+          else if (status && status !== o.status) stepsForStatus(o, status, r);
+          if (status && status !== o.status) {
+            o.history.push({ status, at: new Date().toISOString(), by: r });
             const st = pload().settings;
-            if (patch.status === 'completed' && patch.notify !== false && st.webhookUrl && st.notifyOnDone) o.history.push(await notify('completed', o, false));
-            o.status = patch.status;
+            if (status === 'completed' && patch.notify !== false && st.webhookUrl && st.notifyOnDone) o.history.push(await notify('completed', o, false));
+            o.status = status;
           }
           if (patch.whatsapp) o.history = [...(o.history || []), { event: 'whatsapp', kind: patch.whatsapp === 'created' ? 'created' : 'completed', at: new Date().toISOString(), by: r }];
           if (patch.internal_notes !== undefined) o.internal_notes = patch.internal_notes || null;

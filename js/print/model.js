@@ -10,6 +10,57 @@ export const ORDER_STATUS = {
 };
 export const STATUS_ORDER = ['new', 'pending', 'completed'];
 
+// Production steps for orders that need finishing after printing: lamination (the customer chose it) and
+// cutting (stickers / labels). Such an order goes Printing → waiting for lamination / cutting → Completed;
+// ticking the last step completes it. Other orders keep the plain New → Pending → Completed.
+export const STEPS = {
+  print:    { todo: 'Print',    label: 'Mark printed',   done: 'Printed',   waiting: 'Printing',               icon: 'printer' },
+  laminate: { todo: 'Laminate', label: 'Mark laminated', done: 'Laminated', waiting: 'Waiting for lamination', icon: 'layers' },
+  cut:      { todo: 'Cut',      label: 'Mark cut',       done: 'Cut',       waiting: 'Waiting for cutting',    icon: 'scissors' },
+};
+export const STEP_ORDER = ['print', 'laminate', 'cut'];
+const yes = (v) => (Array.isArray(v) ? v : [v]).some((x) => /^\s*yes\b/i.test(String(x ?? '')));
+// Which finishing steps an order needs, from its answers (and what was ordered).
+export function finishingFor(answers = [], summary = '') {
+  const out = [];
+  if ((answers || []).some((a) => !a.hidden && (a.id === 'q_lamination' || /laminat/i.test(a.label || '')) && yes(a.value))) out.push('laminate');
+  if (/sticker|label/i.test(summary || '')) out.push('cut');
+  return out;
+}
+// The step list for those finishing steps (keeps what's already ticked); null when there's no finishing.
+export function makeSteps(finishing, prev = []) {
+  if (!finishing?.length) return null;
+  return STEP_ORDER.filter((id) => id === 'print' || finishing.includes(id))
+    .map((id) => { const p = (prev || []).find((x) => x.id === id); return { id, at: p?.at || null, by: p?.by || null }; });
+}
+export const nextStep = (o) => (o?.steps || []).find((x) => !x.at) || null;
+// "Printing", "Printed · waiting for lamination", … — for orders being worked on that have steps.
+export function stageLabel(o) {
+  if (!o?.steps?.length || o.status !== 'pending') return null;
+  const next = nextStep(o);
+  if (!next) return null;
+  const last = [...o.steps].reverse().find((x) => x.at);
+  return last ? `${STEPS[last.id].done} · ${STEPS[next.id].waiting.toLowerCase()}` : STEPS[next.id].waiting;
+}
+// Ticks (or un-ticks) a step; the status follows: any step done → Pending, every step done → Completed.
+// Returns the new status (the caller logs it and tells the bot when it's Completed).
+export function applyStep(o, stepId, done, who, at = new Date().toISOString()) {
+  const s = (o.steps || []).find((x) => x.id === stepId);
+  if (!s) throw new Error("This order doesn't have that step.");
+  const history = o.history || (o.history = []);
+  if (done && !s.at) { s.at = at; s.by = who || null; history.push({ event: 'step', step: stepId, at, by: who }); }
+  if (!done && s.at) { s.at = null; s.by = null; history.push({ event: 'step', step: stepId, undone: true, at, by: who }); }
+  return o.steps.every((x) => x.at) ? 'completed' : o.steps.some((x) => x.at) || o.status === 'completed' ? 'pending' : o.status;
+}
+// Moving the status by hand keeps the steps in line: Completed ticks them all, New clears them,
+// and going back from Completed to Pending un-ticks the last one.
+export function stepsForStatus(o, status, who, at = new Date().toISOString()) {
+  if (!o.steps?.length) return;
+  if (status === 'completed') o.steps.forEach((x) => { if (!x.at) { x.at = at; x.by = who || null; } });
+  else if (status === 'new') o.steps.forEach((x) => { x.at = null; x.by = null; });
+  else if (status === 'pending' && o.status === 'completed') { const last = [...o.steps].reverse().find((x) => x.at); if (last) { last.at = null; last.by = null; } }
+}
+
 export const QUESTION_TYPES = [
   { id: 'text',     label: 'Short answer' },
   { id: 'textarea', label: 'Paragraph' },

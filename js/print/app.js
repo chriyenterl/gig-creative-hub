@@ -10,6 +10,7 @@ import { LinkCard, TeamAccess } from '../team-access.js';
 import {
   ORDER_STATUS, STATUS_ORDER, QUESTION_TYPES, QUESTION_ROLES, hasOptions, newQuestionId, answerText, isOverdue, dueLabel,
   fillMessage, notifyPayload, SAMPLE_ORDER, MESSAGE_TAGS, useFileLinks, waLink, teamMessage, QuestionField, isVisible,
+  STEPS, nextStep, stageLabel,
 } from './shared.js';
 const CC = CONFIG.WHATSAPP_COUNTRY_CODE || '60';
 
@@ -181,6 +182,30 @@ async function changeStatus(order, status) {
   } catch (e) { toastError(e); return null; }
 }
 
+// Ticks a production step (printed / laminated / cut). Ticking the last one completes the order.
+async function changeStep(order, stepId, done = true) {
+  const finishing = done && (order.steps || []).every((x) => x.at || x.id === stepId);
+  if (finishing) {
+    const msg = fillMessage(P.readyMessage, order);
+    const ok = await confirmDialog({
+      title: `${STEPS[stepId].done} — complete ${order.order_no}?`,
+      message: `That's the last step, so the order will be marked completed. ${P.botLinked && P.notifyOnDone !== false
+        ? `Your bot will be told, so it can send the customer: “${msg}”` : 'Next, tap the green “WhatsApp: ready for pickup” button to send the customer the message.'}`,
+      confirmLabel: `${STEPS[stepId].done} & completed`,
+    });
+    if (!ok) return null;
+  } else if (!done && !(await confirmDialog({ title: `Not ${STEPS[stepId].done.toLowerCase()} yet?`, message: `This un-ticks “${STEPS[stepId].done}” for ${order.order_no}.`, confirmLabel: 'Un-tick' }))) return null;
+  try {
+    const o = await api.print.update(getKey(), order.id, { step: stepId, done });
+    replaceOrder(o);
+    const note = o.history?.[o.history.length - 1];
+    if (o.status === 'completed' && note?.event === 'notify') toast(note.ok ? 'Completed — sent to your bot.' : 'Completed, but ' + note.detail, note.ok ? 'ok' : 'error');
+    else if (o.status === 'completed') toast(`${order.order_no} completed — now tap “WhatsApp: ready for pickup”.`);
+    else toast(`${order.order_no}: ${stageLabel(o) || (done ? STEPS[stepId].done : 'Updated')}`);
+    return o;
+  } catch (e) { toastError(e); return null; }
+}
+
 // Opens WhatsApp with the customer's number and the message already typed; logs it in the order history.
 function WhatsAppButton({ order, kind, primary }) {
   const label = kind === 'created' ? 'order received' : 'ready for pickup';
@@ -201,9 +226,19 @@ function DueCell({ order }) {
   const late = isOverdue(order);
   return html`<span class=${late ? 'overdue' : ''}>${dueLabel(order)}${late && html` · late`}</span>`;
 }
+// Where a pending order with production steps is: "Printing", "Printed · waiting for lamination"…
+function StagePill({ order }) {
+  const label = stageLabel(order);
+  if (!label) return null;
+  const next = nextStep(order);
+  return html`<span class=${'stage-pill stage-' + next.id}><${Icon} name=${STEPS[next.id].icon} size=${12} />${label}</span>`;
+}
 function NextAction({ order, small }) {
   const cls = 'btn' + (small ? ' btn-sm' : '');
   if (order.status === 'new') return html`<button class=${cls} onClick=${(e) => { e.stopPropagation(); changeStatus(order, 'pending'); }}><${Icon} name="play" size=${12} />Start</button>`;
+  const next = order.status === 'pending' && nextStep(order);
+  if (next) return html`<button class=${cls + (order.steps.every((x) => x.at || x.id === next.id) ? ' btn-good' : '')} onClick=${(e) => { e.stopPropagation(); changeStep(order, next.id); }}>
+    <${Icon} name="check" size=${14} />${STEPS[next.id].done}</button>`;
   if (order.status === 'pending') return html`<button class=${cls + ' btn-good'} onClick=${(e) => { e.stopPropagation(); changeStatus(order, 'completed'); }}><${Icon} name="check" size=${14} />Done</button>`;
   return null;
 }
@@ -220,9 +255,11 @@ function Overview() {
     return h && new Date(h.at).getTime() > weekAgo;
   }).length;
   const dueSoon = open.filter((o) => o.due_date).sort((a, b) => (a.due_date > b.due_date ? 1 : -1)).slice(0, 6);
+  const waitingFor = (id) => by('pending').filter((o) => nextStep(o)?.id === id).length;
   const cards = [
     { s: 'new', n: 1, sub: by('new').length ? 'Waiting to be started' : 'Nothing waiting' },
-    { s: 'pending', n: 2, sub: late.length ? `${late.length} past the due date` : 'In production' },
+    { s: 'pending', n: 2, sub: [waitingFor('laminate') && `${waitingFor('laminate')} waiting for lamination`, waitingFor('cut') && `${waitingFor('cut')} for cutting`,
+      late.length && `${late.length} past the due date`].filter(Boolean).join(' · ') || 'In production' },
     { s: 'completed', n: 3, sub: `${doneThisWeek} completed this week` },
   ];
   return html`
@@ -242,7 +279,7 @@ function Overview() {
         <header class="card-head"><h2>Due soonest</h2><span class="muted">Not completed yet</span></header>
         ${dueSoon.length ? html`<ul class="order-mini">${dueSoon.map((o) => html`<li key=${o.id}><a href=${hrefFor('order/' + o.id)}>
             <span><b>${o.order_no}</b> · ${o.customer_name || 'Customer'}<span class="muted small"> — ${o.summary || ''}${o.quantity ? ' × ' + o.quantity : ''}</span></span>
-            <span class="order-mini-right"><${DueCell} order=${o} /><${StatusPill} status=${o.status} /></span></a></li>`)}</ul>`
+            <span class="order-mini-right"><${DueCell} order=${o} />${stageLabel(o) ? html`<${StagePill} order=${o} />` : html`<${StatusPill} status=${o.status} />`}</span></a></li>`)}</ul>`
         : html`<${Empty} icon="check" title="Nothing due">No open orders with a due date.<//>`}
       </section>
       <section class="card">
@@ -259,7 +296,12 @@ function OrderList({ status, query }) {
   const { orders } = usePrint();
   const q = (query.q || '').toLowerCase();
   const sort = query.sort || (status === 'completed' ? 'newest' : 'due');
-  const rows = orders.filter((o) => o.status === status)
+  const inStatus = orders.filter((o) => o.status === status);
+  // Pending orders can be narrowed to a production stage (e.g. everything waiting for lamination).
+  const stageOf = (o) => nextStep(o)?.id || 'other';
+  const stages = status === 'pending' ? ['print', 'laminate', 'cut'].filter((id) => inStatus.some((o) => stageOf(o) === id)) : [];
+  const stage = stages.includes(query.stage) ? query.stage : '';
+  const rows = inStatus.filter((o) => !stage || stageOf(o) === stage)
     .filter((o) => !q || [o.order_no, o.customer_name, o.company, o.summary, o.phone, o.email].join(' ').toLowerCase().includes(q))
     .sort(sort === 'due' ? ((a, b) => ((a.due_date || '9999') > (b.due_date || '9999') ? 1 : -1)) : byNewest);
   const set = (patch) => go('orders/' + status, { ...query, ...patch }, { replace: true });
@@ -277,12 +319,17 @@ function OrderList({ status, query }) {
         <option value="due">Due date (soonest first)</option><option value="newest">Newest first</option>
       </select>
     </div>
+    ${stages.length > 0 && html`<div class="chips stage-chips">
+      <button class=${'chip' + (!stage ? ' on' : '')} onClick=${() => set({ stage: '' })}>All pending <span>${inStatus.length}</span></button>
+      ${stages.map((id) => html`<button class=${'chip' + (stage === id ? ' on' : '')} onClick=${() => set({ stage: stage === id ? '' : id })}>
+        <${Icon} name=${STEPS[id].icon} size=${12} />${STEPS[id].waiting} <span>${inStatus.filter((o) => stageOf(o) === id).length}</span></button>`)}
+    </div>`}
     ${rows.length ? html`<div class="table-wrap"><table class="table">
       <thead><tr><th>Order</th><th>Customer</th><th>Item</th><th class="num">Qty</th><th>Due</th><th>Received</th><th></th></tr></thead>
       <tbody>${rows.map((o) => html`<tr key=${o.id} onClick=${() => go('order/' + o.id)}>
         <td data-label="Order"><b>${o.order_no}</b></td>
         <td data-label="Customer">${o.customer_name || '—'}${o.company && html`<div class="muted small">${o.company}</div>`}</td>
-        <td data-label="Item">${o.summary || '—'}</td>
+        <td data-label="Item">${o.summary || '—'}${stageLabel(o) && html`<div class="stage-line"><${StagePill} order=${o} /></div>`}</td>
         <td data-label="Qty" class="num">${o.quantity || '—'}</td>
         <td data-label="Due"><${DueCell} order=${o} /></td>
         <td data-label="Received" class="muted">${timeAgo(o.created_at)}</td>
@@ -366,10 +413,13 @@ function OrderDetail({ id }) {
         ${o.status === 'new' && P.botLinked && html`<button class="btn btn-ghost" onClick=${() => notifyAgain('created')}><${Icon} name="refresh" size=${14} />Send to bot again</button>`}
         ${o.status === 'new' && html`<${WhatsAppButton} order=${o} kind="created" />
           <button class="btn btn-primary" onClick=${() => changeStatus(o, 'pending')}><${Icon} name="play" size=${14} />Start working on it</button>`}
-        ${o.status === 'pending' && html`<button class="btn btn-good" onClick=${() => changeStatus(o, 'completed')}><${Icon} name="check" size=${16} />Mark as completed</button>`}
+        ${o.status === 'pending' && !nextStep(o) && html`<button class="btn btn-good" onClick=${() => changeStatus(o, 'completed')}><${Icon} name="check" size=${16} />Mark as completed</button>`}
+        ${o.status === 'pending' && nextStep(o) && html`<button class=${'btn ' + (o.steps.every((x) => x.at || x.id === nextStep(o).id) ? 'btn-good' : 'btn-primary')}
+          onClick=${() => changeStep(o, nextStep(o).id)}><${Icon} name=${STEPS[nextStep(o).id].icon} size=${16} />${STEPS[nextStep(o).id].label}</button>`}
         ${o.status === 'completed' && html`<${WhatsAppButton} order=${o} kind="completed" primary />
           ${P.botLinked && html`<button class="btn btn-ghost" onClick=${() => notifyAgain('completed')}><${Icon} name="refresh" size=${14} />Send to bot again</button>`}`}
       </div>
+      <${ProductionSteps} o=${o} />
     </section>
 
     <div class="order-layout">
@@ -405,8 +455,10 @@ function OrderDetail({ id }) {
         </section>
         <section class="card">
           <header class="card-head"><h2>History</h2></header>
-          <ol class="timeline">${[...(o.history || [])].reverse().map((h, i) => html`<li key=${i} class=${h.event === 'team' ? (h.ok ? 'ok' : 'warn') : h.event === 'whatsapp' ? 'wa' : h.event === 'notify' ? (h.ok ? 'ok' : 'warn') : 'tone-' + (ORDER_STATUS[h.status]?.tone || 'neutral')}>
-            <b>${h.event === 'team' ? (h.ok ? 'Team alerted by email' : 'Team email not sent')
+          <ol class="timeline">${[...(o.history || [])].reverse().map((h, i) => html`<li key=${i} class=${h.event === 'step' ? (h.undone ? 'tone-neutral' : 'tone-info') : h.event === 'finishing' ? 'tone-neutral' : h.event === 'team' ? (h.ok ? 'ok' : 'warn') : h.event === 'whatsapp' ? 'wa' : h.event === 'notify' ? (h.ok ? 'ok' : 'warn') : 'tone-' + (ORDER_STATUS[h.status]?.tone || 'neutral')}>
+            <b>${h.event === 'step' ? (h.undone ? `Un-ticked: ${STEPS[h.step]?.done || h.step}` : STEPS[h.step]?.done || h.step)
+              : h.event === 'finishing' ? (h.steps?.length ? 'Steps set: ' + ['print', ...h.steps].map((id) => STEPS[id].done.toLowerCase()).join(' → ') : 'No lamination or cutting needed')
+              : h.event === 'team' ? (h.ok ? 'Team alerted by email' : 'Team email not sent')
               : h.event === 'whatsapp' ? `WhatsApp opened — “${h.kind === 'created' ? 'order received' : 'ready for pickup'}” message`
               : h.event === 'notify'
               ? (h.kind === 'created' ? (h.ok ? 'Bot told about the new order' : 'Bot not reached (new order)') : h.ok ? 'Bot told the order is ready' : 'Bot not reached (order ready)')
@@ -417,6 +469,41 @@ function OrderDetail({ id }) {
         </section>
       </div>
     </div>`;
+}
+
+// Production steps on the order page: what's printed / laminated / cut (with who and when), and which
+// finishing this order needs — set from the order form, and changeable here.
+function ProductionSteps({ o }) {
+  const [editing, setEditing] = useState(false);
+  const has = (id) => (o.steps || []).some((x) => x.id === id);
+  const setFinishing = async (patch) => {
+    const finishing = { laminate: has('laminate'), cut: has('cut'), ...patch };
+    try { replaceOrder(await api.print.update(getKey(), o.id, { finishing })); toast('Steps updated.'); } catch (e) { toastError(e); }
+  };
+  const when = (at) => `${fmtDate(at)} ${new Date(at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
+  const next = nextStep(o);
+  return html`<div class="prod-steps">
+    ${o.steps?.length ? html`<ol class="prod-track">
+      ${o.steps.map((x, i) => html`<li key=${x.id} class=${'prod-step' + (x.at ? ' done' : '') + (o.status !== 'new' && next?.id === x.id ? ' current' : '')}>
+        <button type="button" class="prod-dot" aria-label=${x.at ? `Un-tick ${STEPS[x.id].done}` : STEPS[x.id].label}
+          data-tip=${x.at ? 'Click to un-tick' : STEPS[x.id].label} onClick=${() => changeStep(o, x.id, !x.at)}>
+          ${x.at ? html`<${Icon} name="check" size=${13} />` : html`<${Icon} name=${STEPS[x.id].icon} size=${13} />`}</button>
+        <span class="prod-text"><b>${x.at ? STEPS[x.id].done : STEPS[x.id].todo}</b>
+          <span class="muted small">${x.at ? `${when(x.at)}${x.by ? ' · ' + x.by : ''}` : o.status === 'new' ? 'Not started' : next?.id === x.id ? STEPS[x.id].waiting : 'Next'}</span></span>
+      </li>`)}
+      <li class=${'prod-step' + (o.status === 'completed' ? ' done' : '')}>
+        <span class="prod-dot"><${Icon} name="check" size=${13} /></span>
+        <span class="prod-text"><b>Completed</b><span class="muted small">${o.status === 'completed' ? 'All done' : 'After the last step'}</span></span>
+      </li>
+    </ol>` : html`<p class="muted small prod-none">No lamination or cutting for this order — just print and complete.</p>`}
+    <div class="prod-edit no-print">
+      ${editing ? html`<span class="muted small">This order needs:</span>
+        <label class="check-row"><input type="checkbox" checked=${has('laminate')} onChange=${(e) => setFinishing({ laminate: e.target.checked })} />Lamination</label>
+        <label class="check-row"><input type="checkbox" checked=${has('cut')} onChange=${(e) => setFinishing({ cut: e.target.checked })} />Cutting</label>
+        <button class="btn btn-sm btn-ghost" onClick=${() => setEditing(false)}>Done</button>`
+      : html`<button class="link small" onClick=${() => setEditing(true)}>${o.steps?.length ? 'Change steps' : 'Add lamination or cutting'}</button>`}
+    </div>
+  </div>`;
 }
 
 // "Only show this question when <earlier question> is / isn't one of …"

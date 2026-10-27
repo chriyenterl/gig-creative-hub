@@ -100,12 +100,6 @@ export function TeamAccess({ printKey = null, data, onChange }) {
   const copyLink = async (s) => { await copyText(personLink(s)); toast(`${s.name}'s sign-in link copied — it signs them in without a passcode.`); };
 
   return html`
-    ${adminLinks && html`<div class="access-grid access-grid-2">
-      ${adminCard(adminLinks.print, 'Print Hub admin link', links.printHub(adminLinks.print?.key),
-        'For your team — no sign-up. Opens the Print Hub: see orders, add orders, move them New → Pending → Completed, notes, job sheets. They can\'t change settings or delete orders.')}
-      ${adminCard(adminLinks.hub, 'Creative Hub admin link', links.creativeHub(adminLinks.hub?.key),
-        'For your team — no sign-up. Opens the Creative Hub (library, uploads, review, talents…) with the Print Hub in its menu. Only owners can manage the team or settings.')}
-    </div>`}
     <section class="card staff-card" id="team">
       <header class="card-head"><h2>Team</h2><${Pill} tone="neutral">${members.length} ${members.length === 1 ? 'person' : 'people'}<//></header>
       ${settings?.joinKey ? html`<div class="join-box">
@@ -149,6 +143,14 @@ export function TeamAccess({ printKey = null, data, onChange }) {
             <button class="btn btn-sm btn-ghost-danger" onClick=${() => remove(s)}><${Icon} name="trash" size=${14} />Remove</button>
           </div>
         </li>`)}</ul>`}
-      ${!members.length && !pending.length && html`<p class="muted small">Nobody yet — share the join link or an admin link with your team.</p>`}
-    </section>`;
+      ${!members.length && !pending.length && html`<p class="muted small">Nobody yet — share the join link with your team.</p>`}
+    </section>
+    ${adminLinks && (adminLinks.print || adminLinks.hub) && html`<h3 class="subhead admin-links-head">Admin links — being switched off</h3>
+    <p class="muted small">Shared links that don't need a passcode. Once everyone has joined with the join link above, these will be removed and anyone still using them is signed out.</p>
+    <div class="access-grid access-grid-2">
+      ${adminCard(adminLinks.print, 'Print Hub admin link', links.printHub(adminLinks.print?.key),
+        'For your team — no sign-up. Opens the Print Hub: see orders, add orders, move them New → Pending → Completed, notes, job sheets. They can\'t change settings or delete orders.')}
+      ${adminCard(adminLinks.hub, 'Creative Hub admin link', links.creativeHub(adminLinks.hub?.key),
+        'For your team — no sign-up. Opens the Creative Hub (library, uploads, review, talents…) with the Print Hub in its menu. Only owners can manage the team or settings.')}
+    </div>`}`;
 }

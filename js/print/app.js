@@ -6,7 +6,8 @@ import { setApi } from '../store.js';
 import { CONFIG } from '../../config.js';
 import { fmtDate, timeAgo, copyText, parseHash, hrefFor, go, fmtBytes } from '../util.js';
 import { Icon, PageHead, Field, Empty, Pill, Tabs, MultiChips, DialogHost, ToastHost, TooltipHost, InstallButton, InstallHelpHost, StorageWarning, isInstalledApp, PasscodeInput, confirmDialog, toast, toastError } from '../ui.js';
-import { LinkCard, TeamAccess } from '../team-access.js';
+import { TeamAccess } from '../team-access.js';
+import { CustomerControls, MasterControls, ACCESS_PAGES } from '../print-controls.js';
 import {
   ORDER_STATUS, STATUS_ORDER, QUESTION_TYPES, QUESTION_ROLES, hasOptions, newQuestionId, answerText, isOverdue, dueLabel,
   fillMessage, notifyPayload, SAMPLE_ORDER, MESSAGE_TAGS, useFileLinks, waLink, teamMessage, QuestionField, isVisible,
@@ -596,131 +597,23 @@ function FormEditor() {
       <button class="btn btn-primary" disabled=${busy} onClick=${save}>Save form</button></div>`}`;
 }
 
-function useSaver(pickFn, extra) {
-  const { settings } = usePrint();
-  const [d, setD] = useState(() => pickFn(settings));
-  const [busy, setBusy] = useState(false);
-  const key = JSON.stringify(pickFn(settings));
-  useEffect(() => setD(pickFn(settings)), [key]);
-  const dirty = JSON.stringify(d) !== key;
-  const save = async (payload) => {
-    setBusy(true);
-    try {
-      const s = await api.print.saveSettings(getKey(), payload || d);
-      setP({ settings: s, botLinked: !!s.webhookUrl, readyMessage: s.readyMessage, newOrderMessage: s.newOrderMessage, notifyOnDone: s.notifyOnDone });
-      toast('Saved.');
-      extra?.();
-    } catch (e) { toastError(e); }
-    setBusy(false);
-  };
-  return { settings, d, setD, set: (k) => (v) => setD((x) => ({ ...x, [k]: v })), dirty, busy, save };
+// Keeps the Print Hub's own state in step with changes made on these pages.
+function onAccessChange(patch) {
+  if (patch.settings) {
+    const s = patch.settings;
+    if (getKey() && P.settings && getKey() === P.settings.masterKey && s.masterKey !== P.settings.masterKey) setKey(s.masterKey); // you changed the link you're using
+    Object.assign(patch, { botLinked: !!s.webhookUrl, readyMessage: s.readyMessage, newOrderMessage: s.newOrderMessage, notifyOnDone: s.notifyOnDone });
+  }
+  setP(patch);
 }
-
-function MessagesCard() {
-  const { d, set, dirty, busy, save } = useSaver((s) => ({ newOrderMessage: s.newOrderMessage || '', readyMessage: s.readyMessage || '' }));
-  const box = (title, k) => html`<div class="bot-event">
-    <b>${title}</b>
-    <textarea rows="2" value=${d[k]} onInput=${(e) => set(k)(e.target.value)}></textarea>
-    <div class="msg-preview"><span class="muted small">Preview</span>${fillMessage(d[k], SAMPLE_ORDER)}</div>
-  </div>`;
-  return html`<section class="card bot-card">
-    <header class="card-head"><h2>Customer messages</h2></header>
-    <p class="muted small">Sent by your bot, and used by the one-tap WhatsApp buttons on each order. You can use ${MESSAGE_TAGS.join(' ')}.</p>
-    ${box('“Order received”', 'newOrderMessage')}
-    ${box('“Ready for pickup”', 'readyMessage')}
-    <div class="page-actions"><button class="btn btn-primary" disabled=${!dirty || busy} onClick=${() => save()}>${busy ? 'Saving…' : 'Save messages'}</button></div>
-  </section>`;
-}
-
-// Which phones and computers get a notification for every new order.
-function AlertsCard() {
-  const { devices, pushKey } = usePrint();
-  const remove = async (d) => {
-    if (!(await confirmDialog({ title: `Stop alerts on ${d.who}'s ${d.device || 'device'}?`, message: 'That device stops getting new-order notifications. They can turn alerts on again from the menu.', confirmLabel: 'Stop alerts', danger: true }))) return;
-    try { setP({ devices: await api.print.pushRemove(getKey(), d.id) }); toast('Alerts stopped on that device.'); } catch (e) { toastError(e); }
-  };
-  return html`<section class="card bot-card">
-    <header class="card-head"><h2>New-order alerts</h2>
-      ${pushKey && html`<${Pill} tone=${devices.length ? 'good' : 'neutral'}>${devices.length} ${devices.length === 1 ? 'device' : 'devices'}<//>`}</header>
-    <p class="muted small">${pushKey
-      ? html`Everyone with a team link — and you — can get a notification on their phone for every new order, even when the app is closed.
-        It stays in their notification centre until they open it, like a WhatsApp message. Each person turns it on once on their own device:
-        <b>New-order alerts</b> at the bottom of the menu (on iPhone, add the Print Hub to the Home Screen first).`
-      : html`Each person can turn on <b>New-order alerts</b> at the bottom of the menu: a chime and a pop-up while the Print Hub is open.`}</p>
-    ${pushKey && (devices.length
-      ? html`<ul class="plain-list device-list">${devices.map((d) => html`<li key=${d.id}>
-          <span><${Icon} name="bell" size=${15} /> <b>${d.who || 'Someone'}</b><span class="muted small"> · ${d.device || 'device'} · since ${fmtDate(d.since)}</span></span>
-          <button class="icon-btn" aria-label="Stop alerts on this device" data-tip="Stop alerts on this device" onClick=${() => remove(d)}><${Icon} name="trash" size=${15} /></button>
-        </li>`)}</ul>`
-      : html`<p class="muted small">No devices yet — once someone turns alerts on, their phone shows up here.</p>`)}
-  </section>`;
-}
-
-function BotCard() {
-  const pick = (s) => ({ webhookUrl: s.webhookUrl || '', webhookSecret: s.webhookSecret || '', notifyOnNew: s.notifyOnNew !== false, notifyOnDone: s.notifyOnDone !== false });
-  const { settings, d, set, dirty, busy, save } = useSaver(pick);
-  const [showPayload, setShowPayload] = useState(false);
-  const test = async (kind) => {
-    try { const r = await api.print.testNotify(getKey(), kind); toast(r.detail, r.ok ? 'ok' : 'error'); } catch (e) { toastError(e); }
-  };
-  const canTest = !!settings.webhookUrl && !dirty;
-  const toggle = (k, label, kind) => html`<div class="switch-row">
-    <label class="switch"><input type="checkbox" checked=${d[k]} onChange=${(e) => set(k)(e.target.checked)} /><span></span></label>
-    <span class="grow">${label}</span>
-    <button class="btn btn-sm btn-ghost" disabled=${!canTest} onClick=${() => test(kind)}><${Icon} name="mail" size=${14} />Test</button></div>`;
-  return html`<section class="card bot-card">
-    <header class="card-head"><h2>Bot connection</h2>
-      <${Pill} tone=${settings.webhookUrl ? 'good' : 'neutral'}>${settings.webhookUrl ? 'Bot linked' : 'No bot yet'}<//></header>
-    <p class="muted small">Your bot sends the WhatsApp messages automatically. Each new and completed order is sent to it with the customer's
-      details and the messages above (plus a ready-made <code>team_message</code> it can post to your team's group). Paste the link your
-      bot gives you — often called a “webhook URL”.</p>
-    ${html`
-      <div class="form-grid">
-        <${Field} label="Bot link (webhook URL)" wide><input type="url" value=${d.webhookUrl} placeholder="https://…" onInput=${(e) => set('webhookUrl')(e.target.value)} /><//>
-        <${Field} label="Secret (optional)" hint="Sent as the X-Webhook-Secret header" wide><input value=${d.webhookSecret} onInput=${(e) => set('webhookSecret')(e.target.value)} autocomplete="off" /><//>
-      </div>
-      <div class="switch-list">
-        ${toggle('notifyOnNew', 'Tell the bot when a new order comes in', 'created')}
-        ${toggle('notifyOnDone', 'Tell the bot when an order is completed', 'completed')}
-      </div>
-      <div class="page-actions">
-        <button class="btn btn-primary" disabled=${!dirty || busy} onClick=${() => save()}>${busy ? 'Saving…' : 'Save bot settings'}</button>
-        <button class="btn btn-ghost" onClick=${() => setShowPayload(!showPayload)}>${showPayload ? 'Hide' : 'Show'} what the bot receives</button>
-      </div>
-      ${showPayload && html`<div class="payload-grid">
-        <div><h3>New order</h3><pre class="code payload">${JSON.stringify(notifyPayload('created', SAMPLE_ORDER, settings.newOrderMessage), null, 2)}</pre></div>
-        <div><h3>Order completed</h3><pre class="code payload">${JSON.stringify(notifyPayload('completed', SAMPLE_ORDER, settings.readyMessage), null, 2)}</pre></div>
-      </div>`}`}
-  </section>`;
-}
-
-function Access() {
-  const { settings, adminLinks, staff, hubLinks } = usePrint();
-  const act = async (fn, msg) => {
-    try { const s = await fn(); setP({ settings: s }); if (msg) toast(msg); return s; } catch (e) { toastError(e); return null; }
-  };
-  const change = async (which, label) => {
-    const ok = await confirmDialog({ title: `Change the ${label}?`, message: 'A new link is created and the old one stops working immediately. You\'ll need to share the new one.', confirmLabel: 'Change link' });
-    if (!ok) return;
-    const usingThis = getKey() && getKey() === settings[which + 'Key'];
-    const s = await act(() => api.print.regenerate(getKey(), which), 'New link created — the old one no longer works.');
-    if (s && usingThis) setKey(s[which + 'Key']);
-  };
-  const toggle = (which, active) => act(() => api.print.setActive(getKey(), which, !active), active ? 'Link disabled.' : 'Link enabled.');
+function Access({ sub }) {
+  const { settings, adminLinks, staff, hubLinks, devices, pushKey } = usePrint();
+  const page = ACCESS_PAGES.find((x) => x.id === (sub || '')) || ACCESS_PAGES[0];
   return html`
-    <${PageHead} title="Links & access" sub="Customers order through one shared link, each team member has their own link, and master runs everything." />
-    <div class="access-grid access-grid-2">
-      <${LinkCard} title="Customer order link" url=${linkFor('order', settings.orderKey)} active=${settings.orderActive} canDisable
-        hint="One link for all customers — share it on WhatsApp, your Instagram bio or website. Anyone with it can place an order."
-        onToggle=${() => toggle('order', settings.orderActive)} onChange=${() => change('order', 'customer order link')} />
-      <${LinkCard} title="Master link" url=${linkFor('master', settings.masterKey)}
-        hint="Full control: everything staff can do, plus the order form, these links, the bot and deleting orders. Your Creative Hub team always has master access."
-        warn="Keep this one private." onChange=${() => change('master', 'master link')} />
-    </div>
-    <${TeamAccess} printKey=${getKey()} data=${{ adminLinks, staff, settings, hubLinks }} onChange=${setP} />
-    <${MessagesCard} />
-    <${BotCard} />
-    <${AlertsCard} />`;
+    <${PageHead} title=${page.title} sub=${page.sub} />
+    ${page.id === '' ? html`<${TeamAccess} printKey=${getKey()} data=${{ adminLinks, staff, settings, hubLinks }} onChange=${onAccessChange} />`
+      : page.id === 'customers' ? html`<${CustomerControls} printKey=${getKey()} data=${{ settings }} onChange=${onAccessChange} />`
+      : html`<${MasterControls} printKey=${getKey()} data=${{ settings, devices, pushKey }} onChange=${onAccessChange} formHref=${hrefFor('form')} />`}`;
 }
 
 // The first time someone opens a shared admin link, ask their name (kept on their device, shown in order history).
@@ -920,7 +813,7 @@ function Shell() {
   else if (p0 === 'order' && p1) page = html`<${OrderDetail} id=${p1} />`;
   else if (p0 === 'new') page = html`<${NewOrder} />`;
   else if (p0 === 'form' && master) page = html`<${FormEditor} />`;
-  else if (p0 === 'access' && master) page = html`<${Access} />`;
+  else if (p0 === 'access' && master) page = html`<${Access} sub=${p1} />`;
   else page = html`<${Overview} />`;
   const current = p0 === 'order' ? orders.find((o) => o.id === p1)?.status : p0 === 'orders' ? p1 : null;
   const waiting = count('new');
@@ -945,7 +838,7 @@ function Shell() {
         ${STATUS_ORDER.map((s) => item(hrefFor('orders/' + s), ORDER_STATUS[s].icon, ORDER_STATUS[s].label, current === s, s === 'completed' ? 0 : count(s)))}
         ${master && html`<div class="nav-divider"></div>
           ${item(hrefFor('form'), 'list', 'Order form', p0 === 'form')}
-          ${item(hrefFor('access'), 'key', 'Links & access', p0 === 'access', pendingCount)}`}
+          <${AccessNav} active=${p0 === 'access' ? p1 || '' : null} pending=${pendingCount} />`}
       </nav>
       <div class="sidebar-foot">
         <${InstallButton} appName=${PRINT_TITLE} />
@@ -968,6 +861,22 @@ function Shell() {
       <${StorageWarning} storage=${P.storage} print />
       ${page}
     </main>
+  </div>`;
+}
+
+// Links & access in the menu, folded out into Team / Customers / Master controls (like Content in the Creative Hub).
+function AccessNav({ active, pending }) {
+  const [open, setOpen] = useState(active !== null);
+  useEffect(() => { if (active !== null) setOpen(true); }, [active]);
+  return html`<div class=${'nav-group' + (open ? ' open' : '')}>
+    <button class=${'nav-item nav-group-btn' + (!open && active !== null ? ' has-active' : '')} aria-expanded=${open} onClick=${() => setOpen(!open)}>
+      <${Icon} name="key" /><span>Links & access</span>${!open && pending > 0 && html`<span class="nav-badge">${pending}</span>`}
+      <span class="nav-chevron"><${Icon} name="chevron" size=${16} /></span>
+    </button>
+    <div class="nav-group-body"><div class="nav-group-inner">
+      ${ACCESS_PAGES.map((x) => html`<a key=${x.id} href=${hrefFor('access' + (x.id ? '/' + x.id : ''))} class=${'nav-item nav-sub' + (active === x.id ? ' active' : '')}
+        aria-current=${active === x.id ? 'page' : undefined}><span>${x.label}</span>${x.id === '' && pending > 0 && html`<span class="nav-badge">${pending}</span>`}</a>`)}
+    </div></div>
   </div>`;
 }
 

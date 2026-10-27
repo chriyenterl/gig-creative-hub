@@ -43,7 +43,11 @@ const NAV = [
     { id: 'talents', label: 'Talents' },
     { id: 'links', label: 'Upload links' },
   ] },
-  { id: 'access', label: 'Links & access', icon: 'key', ownersOnly: true },
+  { group: 'access', label: 'Links & access', icon: 'key', ownersOnly: true, items: [
+    { id: 'access', label: 'Team', badge: 'teamWaiting' },
+    { id: 'access', sub: 'customers', label: 'Customers' },
+    { id: 'access', sub: 'master', label: 'Master controls' },
+  ] },
 ];
 const PAGE_LABELS = { library: 'Library', seasons: 'Seasons', talents: 'Talents', links: 'Upload links', access: 'Links & access', settings: 'Settings', socmed: 'Socmed Hub' };
 
@@ -54,7 +58,7 @@ const saveGroups = (g) => { try { localStorage.setItem(GROUPS_KEY, JSON.stringif
 
 function NavLink({ n, active, sub, badge }) {
   const query = { ...(n.cat ? { cat: n.cat } : {}), ...(n.type ? { type: n.type } : {}) };
-  return html`<a href=${hrefFor(n.id, query)} class=${'nav-item' + (sub ? ' nav-sub' : '') + (active ? ' active' : '')}
+  return html`<a href=${hrefFor(n.id + (n.sub ? '/' + n.sub : ''), query)} class=${'nav-item' + (sub ? ' nav-sub' : '') + (active ? ' active' : '')}
       aria-current=${active ? 'page' : undefined}>
     ${n.icon && html`<${Icon} name=${n.icon} />`}<span>${n.label}</span>
     ${badge > 0 && html`<span class="nav-badge">${badge}</span>`}
@@ -84,15 +88,16 @@ function Shell() {
     talents: () => (p1 ? html`<${TalentDetail} id=${p1} />` : html`<${Talents} query=${route.query} />`),
     links: () => html`<${Links} query=${route.query} />`,
     settings: () => html`<${Settings} />`,
-    access: () => (s.user?.viaLink ? html`<${Dashboard} />` : html`<${Access} />`),
+    access: () => (s.user?.viaLink ? html`<${Dashboard} />` : html`<${Access} sub=${p1} />`),
     socmed: () => html`<${Socmed} sub=${p1} query=${route.query} />`,
   };
   const page = (pages[p0] || pages.dashboard)();
   const pageLabel = PAGE_LABELS[p0] || NAV.find((n) => n.id === p0)?.label || 'Dashboard';
   useEffect(() => { document.title = `${pageLabel} · ${CONFIG.BRAND_NAME}`; }, [pageLabel]);
 
-  const isActive = (n) => n.id === p0 && (n.id !== 'library'
-    || ((n.cat || '') === (route.query.cat || '') && (n.type || '') === (route.query.type || '')));
+  const isActive = (n) => n.id === p0 && (n.id === 'library'
+    ? (n.cat || '') === (route.query.cat || '') && (n.type || '') === (route.query.type || '')
+    : n.id === 'access' ? (n.sub || '') === (p1 || '') : true);
   const groupHasPage = (g) => g.items.some((n) => n.id === p0);
   const [groups, setGroups] = useState(readGroups);
   const toggleGroup = (key) => setGroups((g) => { const next = { ...g, [key]: !isOpen(key) }; saveGroups(next); return next; });
@@ -112,16 +117,19 @@ function Shell() {
       <a href=${hrefFor('dashboard')} class="sidebar-brand"><${Brand} /></a>
       <nav>
         ${NAV.filter((n) => owner || !n.ownersOnly).map((n) => {
-          if (!n.group) return html`<${NavLink} key=${n.id} n=${n} active=${isActive(n)} badge=${n.id === 'review' ? pending : n.id === 'access' ? s.teamWaiting || 0 : 0} />`;
+          if (!n.group) return html`<${NavLink} key=${n.id} n=${n} active=${isActive(n)} badge=${n.id === 'review' ? pending : 0} />`;
           const open = isOpen(n.group);
+          const badgeOf = (c) => (c.badge ? s[c.badge] || 0 : 0);
+          const groupBadge = n.items.reduce((t, c) => t + badgeOf(c), 0);
           return html`<div key=${n.group} class=${'nav-group' + (open ? ' open' : '')}>
             <button class=${'nav-item nav-group-btn' + (!open && groupHasPage(n) ? ' has-active' : '')}
                 aria-expanded=${open} aria-controls=${'nav-' + n.group} onClick=${() => toggleGroup(n.group)}>
-              <${Icon} name=${n.icon} /><span>${n.label}</span><span class="nav-chevron"><${Icon} name="chevron" size=${16} /></span>
+              <${Icon} name=${n.icon} /><span>${n.label}</span>${!open && groupBadge > 0 && html`<span class="nav-badge">${groupBadge}</span>`}
+              <span class="nav-chevron"><${Icon} name="chevron" size=${16} /></span>
             </button>
             <div class="nav-group-body" id=${'nav-' + n.group}>
               <div class="nav-group-inner">
-                ${n.items.map((c) => html`<${NavLink} key=${c.label} n=${c} sub active=${isActive(c)} />`)}
+                ${n.items.map((c) => html`<${NavLink} key=${c.label} n=${c} sub active=${isActive(c)} badge=${badgeOf(c)} />`)}
               </div>
             </div>
           </div>`;

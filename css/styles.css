@@ -1098,3 +1098,14 @@ button.prod-dot:hover { background: var(--accent-soft); color: var(--accent-ink)
   .prod-track { flex-direction: column; }
   .prod-step { border-radius: 14px; }
 }
+
+/* ── Links & access → Master controls ───────────────────────────────────── */
+.access-grid-1 { grid-template-columns: minmax(0, 1fr); }
+.master-card { margin-bottom: 14px; border: 1px solid var(--bad-bg); }
+.master-card h2 { display: inline-flex; align-items: center; gap: 8px; }
+.master-can { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 4px 16px; font-size: 13px; color: var(--ink-2); }
+.master-can li { display: flex; align-items: center; gap: 6px; }
+.master-can .icon { color: var(--good-ink); flex: none; }
+.master-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.master-row h2 { margin-bottom: 2px; }
+.master-row p { margin: 0; }

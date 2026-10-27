@@ -163,21 +163,14 @@ Open it from the Creative Hub sidebar (**Print Hub**). Owners signed in to the h
 | Link | For | Can do |
 |---|---|---|
 | **Customer order link** — `print/order.html#…` | All customers (one shared link) | Fill in the order form, attach artwork, submit, get an order number |
-| **Print Hub admin link** — `print/index.html#k=…` | Your team (one shared link, no sign-up) | Work on print orders: see, add and move orders, notes, job sheets |
-| **Creative Hub admin link** — `index.html#k=…` | Your team (one shared link, no sign-up) | The whole Creative Hub, with the Print Hub in its menu |
 | **Join link** — `join.html#…` | Your team (one shared link) | Ask to join with their name + a 6-digit passcode; you approve each person as **Print Hub only** or **Print Hub + Creative Hub** |
 | **Master link** — `print/index.html#k=…` | You | Everything, plus: edit the order form, links & bot settings, delete orders |
 
-All of them are in **Print Hub → Links & access** (master). The admin links, the join link and the team list are also in the
-**Creative Hub → Links & access** (owners), so you can manage your team from either app.
+They're all in **Links & access**, in the Creative Hub (owners) and the Print Hub (master), split into three tabs:
+**Team** (the join link, approvals and your team), **Customers** (the customer order link and the messages customers get)
+and **Master controls** (the master link, the order form, the bot connection and the phones that get new-order alerts).
 
-**Admin links (quickest — no sign-up):** send the **Print Hub admin link** or the **Creative Hub admin link** to your team.
-Whoever opens one is asked their name once (kept on their phone, shown in the order history) and is straight in. They can do the
-everyday work but can't change settings or manage the team. Because it's one shared link, **Change link** (everyone using the old
-one is signed out) or **Disable** it if it's passed around too widely. For individual sign-ins you can turn off one person at a
-time, use the join link + passcode below instead.
-
-**Your team — join link + passcode (no email):**
+**Your team — join link + passcode:** (there are no shared admin links — everyone has their own sign-in)
 1. Share the **join link** in your team group. A new person opens it, types their **name**, their **email** (only used if they
    forget their passcode) and picks a **6-digit passcode**.
 2. You get a notification (“Ali wants to join”) and the request appears under **Waiting for approval** — tap

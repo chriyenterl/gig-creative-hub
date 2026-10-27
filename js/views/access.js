@@ -14,7 +14,7 @@ export function Access({ sub }) {
     if (!api.print) return setError('Links & access needs the Cloudflare or Google setup.');
     api.print.me(null).then((me) => {
       if (me.role !== 'master') return setError('Only owners can manage access.');
-      setData({ adminLinks: me.adminLinks || null, staff: me.staff || [], settings: me.settings || null, hubLinks: !!me.hubLinks,
+      setData({ staff: me.staff || [], settings: me.settings || null, hubLinks: !!me.hubLinks,
                 devices: me.devices || [], pushKey: me.pushKey || null });
     }).catch((e) => setError(e.message));
   }, []);

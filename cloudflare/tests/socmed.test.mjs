@@ -66,7 +66,9 @@ await new Promise((r) => server.listen(9913, '127.0.0.1', r));
 await data('setupAdmin', { email: 'owner@example.test', name: 'Owner', password: 'socmed-test-pass' });
 const T = (await data('login', { email: 'owner@example.test', password: 'socmed-test-pass' })).token;
 const me = await data('printMe', { token: T });
-const HUB = (await data('linkLogin', { linkKey: me.adminLinks.hub.key, asName: 'Kim' })).token;
+await data('joinRequest', { joinKey: me.settings.joinKey, name: 'Kim', passcode: '135791', email: 'kim@example.test' });
+await data('printStaffApprove', { token: T, id: (await data('printMe', { token: T })).staff.find((x) => x.name === 'Kim').id, hub: true });
+const HUB = (await data('passcodeLogin', { name: 'Kim', passcode: '135791' })).token; // a team member with Creative Hub access
 await data('joinRequest', { joinKey: me.settings.joinKey, name: 'Pat', passcode: '246810', email: 'pat@example.test' });
 const PAT = (await data('printMe', { token: T })).staff.find((x) => x.name === 'Pat');
 await data('printStaffApprove', { token: T, id: PAT.id, hub: false });
@@ -75,7 +77,7 @@ const PT = (await data('passcodeLogin', { name: 'Pat', passcode: '246810' })).to
 console.log('Before Buffer is connected');
 let o = await data('socmedOverview', { token: T });
 ok(o.connected === false && o.channels.length === 0 && o.posts.length === 0, 'nothing connected yet');
-ok((await data('socmedOverview', { token: HUB })).connected === false, 'the team (Creative Hub admin link) can open the Socmed Hub');
+ok((await data('socmedOverview', { token: HUB })).connected === false, 'the team (Creative Hub access) can open the Socmed Hub');
 ok((await api('socmedOverview', { token: PT })).code === 'PRINT_ONLY', 'Print-Hub-only people cannot');
 ok((await api('socmedOverview', {})).code === 'AUTH', 'signed-out visitors cannot');
 ok((await api('socmedConnect', { token: HUB, apiKey: KEY1 })).ok === false && (await api('socmedSetup', { token: HUB })).ok === false, 'only owners connect Buffer');

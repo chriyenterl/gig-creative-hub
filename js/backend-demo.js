@@ -243,11 +243,9 @@ function printSeed() {
     settings: { masterKey: 'demomasterlink', orderKey: 'demoorderlink', orderActive: true, joinKey: 'demojoinlink', joinActive: true, nextNo: 1006,
                 webhookUrl: '', webhookSecret: '', readyMessage: DEFAULT_READY_MESSAGE, newOrderMessage: DEFAULT_NEW_MESSAGE,
                 notifyOnNew: true, notifyOnDone: true },
-    // One private admin link per staff member.
+    // The team: people who joined with the join link + passcode (Ali), and one waiting for approval (Siti).
     staff: [
       // Demo only: passcodes are kept as plain text here (the real server stores them hashed).
-      { id: uid(), name: 'Print Hub admin link', key: 'demoadminlink', active: true, hub: false, shared: true, status: 'approved', pin: null, last_used_at: ago(2), created_at: ago(400) },
-      { id: uid(), name: 'Creative Hub admin link', key: 'demohublink', active: true, hub: true, shared: true, status: 'approved', pin: null, last_used_at: null, created_at: ago(400) },
       { id: uid(), name: 'Ali', key: 'demoalilink', active: true, hub: true, status: 'approved', pin: '123456', last_used_at: null, created_at: ago(30) },
       { id: uid(), name: 'Siti', key: newToken(), active: true, hub: false, status: 'pending', pin: '654321', requested_at: ago(1), created_at: ago(1) },
     ],
@@ -418,9 +416,6 @@ export function createDemoBackend() {
         try { st = (JSON.parse(localStorage.getItem(PRINT_KEY))?.staff || []).find((x) => x.key === key && x.active); } catch {}
         if (!st) throw new Error('This team link is no longer valid. Please ask for a new one.');
         if (!st.hub) throw Object.assign(new Error('This link opens the Print Hub only.'), { code: 'PRINT_ONLY' });
-        let typed = '';
-        try { typed = (localStorage.getItem('gig-my-name') || '').trim(); } catch {}
-        if (st.shared && !typed) return { needsName: true };
       },
       // Team sign-in with name + 6-digit passcode (demo: checks it, then you carry on as the demo user).
       async signInWithPasscode(name, passcode) {
@@ -433,7 +428,6 @@ export function createDemoBackend() {
       },
       async changePasscode() {},
       async requestPasscodeReset() { throw new Error('Demo mode can\'t send emails — in the live app a reset link is emailed to them.'); },
-      saveMyName(n) { try { localStorage.setItem('gig-my-name', String(n).trim().slice(0, 40)); } catch {} },
       async signOut() {},
       async changePassword() {},
       async isTeam() { return true; },
@@ -541,18 +535,9 @@ export function createDemoBackend() {
         try {
           const x = JSON.parse(localStorage.getItem(PRINT_KEY));
           if (x && x.v === 4) {
-            if (!x.staff) { // saved before per-person links: the old shared admin link becomes one
-              x.staff = [{ id: uid(), name: 'Production team', key: x.settings.adminKey || 'demoadminlink', active: x.settings.adminActive !== false,
-                           last_used_at: null, created_at: new Date().toISOString() }];
+            if (!x.staff || x.settings.adminKey || x.staff.some((st) => st.shared || st.key === 'demoadminlink')) { // admin links were removed
+              x.staff = (x.staff || []).filter((st) => !st.shared && st.key !== 'demoadminlink');
               delete x.settings.adminKey; delete x.settings.adminActive;
-              pdb = x;
-              psave();
-            }
-            if (!x.staff.some((st) => st.shared)) { // saved before the two shared admin links existed
-              const old = x.staff.find((st) => st.key === 'demoadminlink');
-              if (old) Object.assign(old, { name: 'Print Hub admin link', shared: true, hub: false });
-              else x.staff.push({ id: uid(), name: 'Print Hub admin link', key: 'demoadminlink', active: true, hub: false, shared: true, status: 'approved', created_at: new Date().toISOString() });
-              x.staff.push({ id: uid(), name: 'Creative Hub admin link', key: 'demohublink', active: true, hub: true, shared: true, status: 'approved', created_at: new Date().toISOString() });
               pdb = x;
               psave();
             }
@@ -583,21 +568,13 @@ export function createDemoBackend() {
         const st = d.staff.find((x) => x.key === key && x.active && x.status !== 'pending');
         if (st) {
           if (!st.last_used_at || Date.now() - new Date(st.last_used_at) > 3600e3) { st.last_used_at = new Date().toISOString(); psave(); }
-          let typed = '';
-          try { typed = (localStorage.getItem('gig-my-name') || '').trim(); } catch {}
-          if (st.shared) return { role: 'admin', who: typed || 'Team (admin link)', hub: !!st.hub, askName: !typed };
           return { role: 'admin', who: st.name, hub: !!st.hub };
         }
         const e = new Error('This access link is no longer valid. Please ask for a new one.'); e.code = 'PRINT_AUTH'; throw e;
       };
       const role = (key) => actor(key).role;
       const needMaster = (key) => { if (role(key) !== 'master') throw new Error('Only the master link can do that.'); };
-      const staffOut = () => pload().staff.filter((x) => !x.shared).map(({ pin, ...x }) => ({ ...clone(x), status: x.status || 'approved', passcode: !!pin }));
-      const adminLinksOut = () => {
-        const one = (x) => x && { id: x.id, key: x.key, active: x.active, last_used_at: x.last_used_at || null };
-        const shared = pload().staff.filter((x) => x.shared);
-        return { print: one(shared.find((x) => !x.hub)), hub: one(shared.find((x) => x.hub)) };
-      };
+      const staffOut = () => pload().staff.map(({ pin, ...x }) => ({ ...clone(x), status: x.status || 'approved', passcode: !!pin }));
       const staffName = (n) => { n = String(n || '').trim().slice(0, 60); if (!n) throw new Error("Type the person's name."); return n; };
       const staffFind = (id) => { const x = pload().staff.find((s) => s.id === id); if (!x) throw new Error('That link no longer exists.'); return x; };
       const orderOk = (k) => pload().settings.orderActive && k === pload().settings.orderKey;
@@ -690,9 +667,9 @@ export function createDemoBackend() {
           const a = actor(key);
           const r = a.role;
           const st = pload().settings;
-          return { role: r, name: a.who, via: key ? 'key' : 'token', hub: !!a.hub, askName: !!a.askName, hubLinks: true, questions: clone(pload().questions), botLinked: !!st.webhookUrl, readyMessage: st.readyMessage,
+          return { role: r, name: a.who, via: key ? 'key' : 'token', hub: !!a.hub, hubLinks: true, questions: clone(pload().questions), botLinked: !!st.webhookUrl, readyMessage: st.readyMessage,
                    newOrderMessage: st.newOrderMessage, notifyOnDone: st.notifyOnDone, storage: demoStorage(),
-                   ...(r === 'master' ? { settings: settingsOut(), staff: staffOut(), adminLinks: adminLinksOut() } : {}) };
+                   ...(r === 'master' ? { settings: settingsOut(), staff: staffOut() } : {}) };
         },
         async orders(key) { await wait(); role(key); return clone(pload().orders); },
         async update(key, id, patch) {

@@ -161,35 +161,15 @@ function Shell() {
 
 // A team link with Creative Hub access looks like index.html#k=<code>: sign in with it, then tidy the address.
 let linkError = null;
-let askNameFor = null; // a shared admin link waiting for "what's your name?"
 async function signInFromLink() {
   const m = /^#k=([A-Za-z0-9_-]{16,})/.exec(location.hash);
   if (!m) return;
   history.replaceState(null, '', location.pathname + location.search + '#/dashboard');
   if (!api.auth.signInWithLink) { linkError = 'Team links for the Creative Hub need the Cloudflare setup.'; return; }
-  try { if ((await api.auth.signInWithLink(m[1]))?.needsName) askNameFor = m[1]; } catch (e) {
+  try { await api.auth.signInWithLink(m[1]); } catch (e) {
     if (e.code === 'PRINT_ONLY') return location.replace('print/index.html#k=' + m[1]); // it's a Print Hub link
-    linkError = e.message;
+    linkError = "That link doesn't work any more. Sign in below with your name and passcode — new to the team? Ask the owner for the join link.";
   }
-}
-
-// Shared admin link: one question before they're in — their name, so order history shows who did what.
-function AskName({ linkKey }) {
-  const [name, setName] = useState('');
-  const [busy, setBusy] = useState(false);
-  const go = async (e) => {
-    e.preventDefault();
-    if (name.trim().length < 2) return;
-    setBusy(true);
-    api.auth.saveMyName?.(name.trim());
-    try { await api.auth.signInWithLink(linkKey); } catch (err) { setBusy(false); alert(err.message); }
-  };
-  return html`<div class="auth-page"><form class="auth-card card" onSubmit=${go}><${Brand} />
-    <div><h1>Welcome!</h1><p class="muted">What's your name? It's shown next to the things you do (e.g. "Moved to Completed · by Ali").</p></div>
-    <label class="field"><span class="field-label">Your name</span>
-      <input value=${name} maxlength="40" autocomplete="name" onInput=${(e) => setName(e.target.value)} autofocus /></label>
-    <button class="btn btn-primary btn-block btn-lg" disabled=${busy || name.trim().length < 2}>${busy ? 'One moment…' : 'Continue'}</button>
-  </form></div>`;
 }
 
 function App() {
@@ -224,7 +204,6 @@ function App() {
 
   let body;
   if (phase.id === 'loading') body = html`<div class="loading"><div class="spinner"></div></div>`;
-  else if (phase.id === 'signedOut' && askNameFor) body = html`<${AskName} linkKey=${askNameFor} />`;
   else if (phase.id === 'signedOut') body = html`<${Login} linkError=${linkError} />`;
   else if (phase.id === 'notTeam') body = html`<${NotTeam} email=${phase.email} />`;
   else if (phase.id === 'error') body = html`<div class="auth-page"><div class="auth-card card">

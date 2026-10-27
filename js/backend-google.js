@@ -202,7 +202,7 @@ export function createGoogleBackend(cfg, { portal = false } = {}) {
       saveSettings(printKey, settings) { return call('printSaveSettings', { printKey, settings }); },
       regenerate(printKey, which) { return call('printRegenerate', { printKey, which }); },
       setActive(printKey, which, active) { return call('printSetActive', { printKey, which, active }); },
-      // One private admin link per staff member.
+      // The team (each person has their own link).
       staffAdd(printKey, name) { return call('printStaffAdd', { printKey, name }); }, // Print Hub only on Google
       staffUpdate(printKey, id, patch) { return call('printStaffUpdate', { printKey, id, patch }); },
       staffRegenerate(printKey, id) { return call('printStaffRegenerate', { printKey, id }); },

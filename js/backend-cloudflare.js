@@ -4,10 +4,6 @@
 const TOKEN_KEY = 'gig-cloudflare-token';
 
 const readToken = () => { try { return localStorage.getItem(TOKEN_KEY); } catch { return null; } };
-// The name someone typed when they opened a shared admin link (shown in order history).
-const NAME_KEY = 'gig-my-name';
-export const readMyName = () => { try { return localStorage.getItem(NAME_KEY) || ''; } catch { return ''; } };
-export const saveMyName = (n) => { try { localStorage.setItem(NAME_KEY, String(n).trim().slice(0, 40)); } catch {} };
 const saveToken = (t) => { try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY); } catch {} };
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -49,7 +45,7 @@ export function createCloudflareBackend(cfg, { portal = false } = {}) {
     let res;
     try {
       // A plain-text body keeps this a "simple" request (no extra CORS round trip).
-      res = await fetch(base + '/api', { method: 'POST', body: JSON.stringify({ action, token, asName: readMyName() || undefined, ...args }) });
+      res = await fetch(base + '/api', { method: 'POST', body: JSON.stringify({ action, token, ...args }) });
     } catch {
       throw new Error("Can't reach the GIG server. Check your internet connection and the CLOUDFLARE_API_URL in config.js.");
     }
@@ -119,14 +115,12 @@ export function createCloudflareBackend(cfg, { portal = false } = {}) {
         const r = await call('login', { email, password });
         token = r.token; saveToken(token); user = r.user; emit();
       },
-      // Team links with Creative Hub access sign people in without an account.
+      // A team member's personal sign-in link (Creative Hub access) signs them in without their passcode.
       async signInWithLink(linkKey) {
         const r = await call('linkLogin', { linkKey });
-        if (r.needsName) return r; // a shared admin link: ask their name first, then try again
         token = r.token; saveToken(token); user = r.user; emit();
         return r;
       },
-      saveMyName,
       // The team signs in with their name + 6-digit passcode (owners use email + password).
       async signInWithPasscode(name, passcode) {
         const r = await call('passcodeLogin', { name, passcode });
@@ -218,7 +212,7 @@ export function createCloudflareBackend(cfg, { portal = false } = {}) {
       saveSettings(printKey, settings) { return call('printSaveSettings', { printKey, settings }); },
       regenerate(printKey, which) { return call('printRegenerate', { printKey, which }); },
       setActive(printKey, which, active) { return call('printSetActive', { printKey, which, active }); },
-      // One private admin link per staff member.
+      // The team (joined with the join link + passcode).
       staffAdd(printKey, name, hub) { return call('printStaffAdd', { printKey, name, hub }); },
       staffUpdate(printKey, id, patch) { return call('printStaffUpdate', { printKey, id, patch }); },
       staffRegenerate(printKey, id) { return call('printStaffRegenerate', { printKey, id }); },

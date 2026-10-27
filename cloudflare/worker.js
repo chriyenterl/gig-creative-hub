@@ -22,7 +22,7 @@
 const TOKEN_DAYS = 30;           // how long a team login lasts
 const PBKDF2_ROUNDS = 20000;     // password hashing strength (kept modest for the free plan's CPU limit)
 const CHUNK = 10 * 1024 * 1024;  // upload part size — big files are sent in pieces of this size
-const SCHEMA_V = '11';            // bump when SCHEMA changes so new columns get added
+const SCHEMA_V = '12';            // bump when SCHEMA changes so new columns get added
 const GB = 1e9;                  // storage is counted the way Cloudflare bills it (1 GB = 1,000,000,000 bytes)
 const DEFAULT_LIMIT_GB = 10;     // uploads stop here (R2's free allowance) — change it in Settings
 
@@ -152,7 +152,7 @@ async function route(req, ctx) {
   if (a === 'status') return { needsSetup: (await count('team_members')) === 0, emailReset: emailReady() };
   if (a === 'setupAdmin') return setupAdmin(req);
   if (a === 'login') return login(req);
-  if (a === 'linkLogin') return linkLogin(req.linkKey, req.asName);
+  if (a === 'linkLogin') return linkLogin(req.linkKey);
   if (a === 'passcodeLogin') return passcodeLogin(req);
   if (a === 'joinInfo') return { ok: await joinKeyOk(req.joinKey) };
   if (a === 'joinRequest') return joinRequest(req, ctx);
@@ -240,6 +240,15 @@ async function setup() {
   }
   // Team members made before joining existed count as approved.
   await DB.prepare("UPDATE print_staff SET status = 'approved' WHERE status IS NULL").run();
+  // Shared admin links were removed (the team joins with the join link + passcode): any left are deleted,
+  // with the phones that got order alerts through them. The people using them are signed out.
+  try {
+    const old = (await DB.prepare("SELECT id FROM print_staff WHERE shared = 1 OR (pass_hash IS NULL AND name IN ('Shared admin link', 'Print Hub admin link', 'Creative Hub admin link'))").all()).results.map((r) => r.id);
+    if (old.length) {
+      await inGroups(old, (g, q) => DB.prepare(`DELETE FROM push_subs WHERE access = 'staff' AND ref IN (${q})`).bind(...g).run());
+      await deleteRows('print_staff', old);
+    }
+  } catch (e) { console.error('removing admin links', e); }
   // Open orders made before production steps existed get theirs (lamination / cutting) now.
   try {
     for (const o of await readTable('print_orders', "WHERE status <> 'completed' AND steps IS NULL")) {
@@ -563,9 +572,7 @@ async function verify(token) {
     if (!st || !st.is_active || st.status !== 'approved' || (await sessionMark(st)) !== data.k) {
       fail('Please sign in again.', 'AUTH');
     }
-    const u = linkUser(st);
-    if (st.shared) u.name = cleanAsName(data.n) || st.name; // shared admin link: the name they typed
-    return u;
+    return linkUser(st);
   }
   const m = await findMember(data.e);
   if (!m || (Number(m.session_v) || 0) !== data.v) fail('Please sign in again.', 'AUTH');
@@ -601,42 +608,17 @@ async function touchStaff(st) { // "last opened" — written at most once an hou
 
 // Sessions are tied to the person's current link and passcode — resetting either signs them out everywhere.
 const sessionMark = async (st) => (await sha256(st.link_key + '|' + (st.pass_hash || ''))).slice(0, 16);
-async function teamSession(st, asName = null) {
-  const payload = b64url(enc.encode(JSON.stringify({ s: st.id, k: await sessionMark(st), x: Date.now() + TOKEN_DAYS * 86400000, ...(asName ? { n: asName } : {}) })));
-  const user = linkUser(st);
-  if (asName) user.name = asName;
-  return { token: payload + '.' + await sign(payload), user: publicMember(user) };
+async function teamSession(st) {
+  const payload = b64url(enc.encode(JSON.stringify({ s: st.id, k: await sessionMark(st), x: Date.now() + TOKEN_DAYS * 86400000 })));
+  return { token: payload + '.' + await sign(payload), user: publicMember(linkUser(st)) };
 }
 
-async function linkLogin(key, asName) {
+async function linkLogin(key) {
   const st = await staffByKey(key);
-  if (!st || !st.is_active || st.status !== 'approved') fail('This link is no longer valid. Please ask for a new one.');
+  if (!st || !st.is_active || st.status !== 'approved' || st.shared) fail('This link is no longer valid. Please ask for a new one.');
   if (!st.hub_access) fail('This link opens the Print Hub only.', 'PRINT_ONLY');
-  const name = cleanAsName(asName);
-  if (st.shared && !name) return { needsName: true }; // ask "what's your name?" first, for order history
   await touchStaff(st);
-  return teamSession(st, st.shared ? name : null);
-}
-
-// Names typed by people using a shared admin link (shown in order history).
-const cleanAsName = (n) => String(n || '').trim().replace(/\s+/g, ' ').slice(0, 40);
-
-// ── Admin links: one shared link for the Print Hub, one for the Creative Hub (with the Print Hub). No sign-up. ──
-async function ensureAdminLinks() {
-  const rows = await readTable('print_staff', 'WHERE shared = 1');
-  const have = { print: rows.find((x) => !x.hub_access), hub: rows.find((x) => x.hub_access) };
-  if (!have.print) { // an older single "Shared admin link" becomes the Print Hub admin link, so it keeps working
-    const old = await DB.prepare("SELECT * FROM print_staff WHERE name = 'Shared admin link' AND pass_hash IS NULL AND hub_access = 0").first();
-    if (old) await updateRow('print_staff', old.id, { shared: true, name: 'Print Hub admin link' });
-    else await insertRow('print_staff', { name: 'Print Hub admin link', link_key: newKey(), is_active: true, hub_access: false, shared: true, status: 'approved' });
-  }
-  if (!have.hub) await insertRow('print_staff', { name: 'Creative Hub admin link', link_key: newKey(), is_active: true, hub_access: true, shared: true, status: 'approved' });
-}
-async function adminLinks() {
-  await ensureAdminLinks();
-  const rows = await readTable('print_staff', 'WHERE shared = 1');
-  const out = (x) => x && { id: x.id, key: x.link_key, active: x.is_active, last_used_at: x.last_used_at };
-  return { print: out(rows.find((x) => !x.hub_access)), hub: out(rows.find((x) => x.hub_access)) };
+  return teamSession(st);
 }
 
 // ── Name + 6-digit passcode ──
@@ -1169,14 +1151,7 @@ async function printSettings() {
   if (!s.newOrderMessage) s.newOrderMessage = DEFAULT_NEW_MESSAGE;
   if (s.notifyOnNew === undefined) s.notifyOnNew = true;
   if (s.notifyOnDone === undefined) s.notifyOnDone = true;
-  if (s.adminKey) { // older versions had one shared admin link — keep it working as a staff link
-    const exists = await DB.prepare('SELECT 1 FROM print_staff WHERE link_key = ?').bind(s.adminKey).first();
-    if (!exists) {
-      try { await insertRow('print_staff', { name: 'Shared admin link', link_key: s.adminKey, is_active: s.adminActive !== false }); } catch { /* added by a parallel request */ }
-    }
-    delete s.adminKey; delete s.adminActive;
-    await savePrintSettings(s);
-  }
+  if (s.adminKey) { delete s.adminKey; delete s.adminActive; await savePrintSettings(s); } // the old shared admin link no longer works
   return s;
 }
 const savePrintSettings = (s) => setSetting('PRINT_SETTINGS', JSON.stringify(s));
@@ -1196,11 +1171,9 @@ async function printActor(req) {
   if (req.printKey && sameText(req.printKey, s.masterKey)) return { role: 'master', who: 'Master', access: 'master', keyHash: await sha256(s.masterKey), via: 'key' };
   if (req.printKey) {
     const st = await staffByKey(req.printKey);
-    if (st && st.is_active && st.status === 'approved') {
+    if (st && st.is_active && st.status === 'approved' && !st.shared) {
       await touchStaff(st);
-      const who = st.shared ? cleanAsName(req.asName) || 'Team (admin link)' : st.name || 'Admin';
-      return { role: 'admin', who, access: 'staff', ref: st.id, keyHash: await sha256(st.link_key), via: 'key', hub: st.hub_access,
-        shared: !!st.shared, askName: !!st.shared && !cleanAsName(req.asName) };
+      return { role: 'admin', who: st.name || 'Admin', access: 'staff', ref: st.id, keyHash: await sha256(st.link_key), via: 'key', hub: st.hub_access };
     }
   }
   if (req.token) {
@@ -1326,12 +1299,11 @@ async function afterNewOrder(created, { except = null, bot = true } = {}) {
 async function printMe(actor) {
   const s = await printSettings();
   const role = actor.role;
-  const out = { role, name: actor.who, via: actor.via || 'key', hub: !!actor.hub, passcode: !!actor.passcode, askName: !!actor.askName, questions: await printQuestions(), botLinked: !!s.webhookUrl, readyMessage: s.readyMessage,
+  const out = { role, name: actor.who, via: actor.via || 'key', hub: !!actor.hub, passcode: !!actor.passcode, questions: await printQuestions(), botLinked: !!s.webhookUrl, readyMessage: s.readyMessage,
                 newOrderMessage: s.newOrderMessage, notifyOnDone: s.notifyOnDone, hubLinks: true,
                 pushKey: (await vapid()).publicKey,
                 storage: await storageInfo() };
   if (role === 'master') {
-    out.adminLinks = await adminLinks();
     out.staff = await staffList();
     out.devices = await pushDevices();
     out.settings = { masterKey: s.masterKey, orderKey: s.orderKey, orderActive: s.orderActive, joinKey: s.joinKey, joinActive: s.joinActive,

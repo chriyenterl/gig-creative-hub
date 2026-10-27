@@ -1,7 +1,7 @@
-// Team access — shared by the Creative Hub and the Print Hub (Links & access): the two shared admin links,
-// the join link, people waiting for approval, and the team list.
+// Team access — shared by the Creative Hub and the Print Hub (Links & access → Team): the join link,
+// people waiting for approval, and the team list. Everyone joins with the join link + their own passcode.
 // <TeamAccess printKey data onChange />: printKey = the Print Hub link in use (null = a signed-in owner);
-// data = { adminLinks, staff, settings, hubLinks } from api.print.me(); onChange(patch) gets the new values.
+// data = { staff, settings, hubLinks } from api.print.me(); onChange(patch) gets the new values.
 import { html } from './lib.js';
 import { api } from './store.js';
 import { copyText, timeAgo } from './util.js';
@@ -33,7 +33,7 @@ export function LinkCard({ title, hint, url, active, canDisable, onToggle, onCha
 }
 
 export function TeamAccess({ printKey = null, data, onChange }) {
-  const { adminLinks, staff = [], settings, hubLinks } = data || {};
+  const { staff = [], settings, hubLinks } = data || {};
   const fail = (e) => { toastError(e); return null; };
   const run = async (fn, msg) => { // actions that return the new team list
     try { const list = await fn(); onChange({ staff: list }); if (msg) toast(msg); return list; } catch (e) { return fail(e); }
@@ -41,18 +41,6 @@ export function TeamAccess({ printKey = null, data, onChange }) {
   const runSettings = async (fn, msg) => {
     try { onChange({ settings: await fn() }); toast(msg); } catch (e) { fail(e); }
   };
-  const refreshAll = async (fn, msg) => { // admin links: reload them afterwards
-    try { await fn(); const me = await api.print.me(printKey); onChange({ adminLinks: me.adminLinks, staff: me.staff || staff }); toast(msg); } catch (e) { fail(e); }
-  };
-
-  // ── Shared admin links (no sign-up) ──
-  const adminCard = (link, title, url, hint) => link && html`<${LinkCard} title=${title} url=${url} active=${link.active} canDisable hint=${hint}
-    onToggle=${() => refreshAll(() => api.print.staffUpdate(printKey, link.id, { active: !link.active }), link.active ? `${title} turned off — anyone using it is signed out.` : `${title} is on again.`)}
-    onChange=${async () => {
-      if (!(await confirmDialog({ title: `Change the ${title.toLowerCase()}?`, message: 'A new link is made and the old one stops working straight away (anyone using it is signed out). Share the new one.', confirmLabel: 'Change link' }))) return;
-      refreshAll(() => api.print.staffRegenerate(printKey, link.id), 'New link made — the old one no longer works.');
-    }} />`;
-
   // ── Join link + team ──
   const joinUrl = settings?.joinKey ? links.join(settings.joinKey) : '';
   const pending = staff.filter((s) => s.status === 'pending');
@@ -145,12 +133,5 @@ export function TeamAccess({ printKey = null, data, onChange }) {
         </li>`)}</ul>`}
       ${!members.length && !pending.length && html`<p class="muted small">Nobody yet — share the join link with your team.</p>`}
     </section>
-    ${adminLinks && (adminLinks.print || adminLinks.hub) && html`<h3 class="subhead admin-links-head">Admin links — being switched off</h3>
-    <p class="muted small">Shared links that don't need a passcode. Once everyone has joined with the join link above, these will be removed and anyone still using them is signed out.</p>
-    <div class="access-grid access-grid-2">
-      ${adminCard(adminLinks.print, 'Print Hub admin link', links.printHub(adminLinks.print?.key),
-        'For your team — no sign-up. Opens the Print Hub: see orders, add orders, move them New → Pending → Completed, notes, job sheets. They can\'t change settings or delete orders.')}
-      ${adminCard(adminLinks.hub, 'Creative Hub admin link', links.creativeHub(adminLinks.hub?.key),
-        'For your team — no sign-up. Opens the Creative Hub (library, uploads, review, talents…) with the Print Hub in its menu. Only owners can manage the team or settings.')}
-    </div>`}`;
+`;
 }

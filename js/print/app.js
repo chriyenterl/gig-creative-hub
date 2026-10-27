@@ -36,7 +36,7 @@ addEventListener('hashchange', () => { if (takeKeyFromLink()) location.reload();
 const linkFor = (page, key) => new URL(page === 'order' ? 'order.html#' + key : 'index.html#k=' + key, location.href.split('#')[0]).href;
 
 // ── Tiny store ─────────────────────────────────────────────────────────────
-let P = { loaded: false, role: null, name: '', via: 'key', hub: false, passcode: false, askName: false, adminLinks: null, staff: [], devices: [], hubLinks: false, pushKey: null, questions: [], settings: null, orders: [], botLinked: false, readyMessage: '', newOrderMessage: '', notifyOnDone: true };
+let P = { loaded: false, role: null, name: '', via: 'key', hub: false, passcode: false, staff: [], devices: [], hubLinks: false, pushKey: null, questions: [], settings: null, orders: [], botLinked: false, readyMessage: '', newOrderMessage: '', notifyOnDone: true };
 const subs = new Set();
 const setP = (patch) => { P = { ...P, ...patch }; subs.forEach((f) => f(P)); };
 function usePrint() {
@@ -607,31 +607,13 @@ function onAccessChange(patch) {
   setP(patch);
 }
 function Access({ sub }) {
-  const { settings, adminLinks, staff, hubLinks, devices, pushKey } = usePrint();
+  const { settings, staff, hubLinks, devices, pushKey } = usePrint();
   const page = ACCESS_PAGES.find((x) => x.id === (sub || '')) || ACCESS_PAGES[0];
   return html`
     <${PageHead} title=${page.title} sub=${page.sub} />
-    ${page.id === '' ? html`<${TeamAccess} printKey=${getKey()} data=${{ adminLinks, staff, settings, hubLinks }} onChange=${onAccessChange} />`
+    ${page.id === '' ? html`<${TeamAccess} printKey=${getKey()} data=${{ staff, settings, hubLinks }} onChange=${onAccessChange} />`
       : page.id === 'customers' ? html`<${CustomerControls} printKey=${getKey()} data=${{ settings }} onChange=${onAccessChange} />`
       : html`<${MasterControls} printKey=${getKey()} data=${{ settings, devices, pushKey }} onChange=${onAccessChange} formHref=${hrefFor('form')} />`}`;
-}
-
-// The first time someone opens a shared admin link, ask their name (kept on their device, shown in order history).
-function AskNameCard() {
-  const [name, setName] = useState('');
-  if (!P.askName) return null;
-  const save = (e) => {
-    e.preventDefault();
-    if (name.trim().length < 2) return;
-    try { localStorage.setItem('gig-my-name', name.trim().slice(0, 40)); } catch {}
-    location.reload();
-  };
-  return html`<form class="alert-banner no-print" onSubmit=${save}>
-    <span class="alert-banner-icon"><${Icon} name="users" size=${20} /></span>
-    <div><b>What's your name?</b><div class="small muted">It's shown next to what you do, e.g. “Moved to Completed · by Ali”.</div>
-      <div class="inline-form"><input value=${name} maxlength="40" placeholder="Your name" aria-label="Your name" onInput=${(e) => setName(e.target.value)} />
-        <button class="btn btn-primary btn-sm" disabled=${name.trim().length < 2}>Save</button></div></div>
-  </form>`;
 }
 
 // Staff add an order themselves — for walk-in, phone or WhatsApp customers. Same questions as the customer form,
@@ -856,7 +838,6 @@ function Shell() {
     <div class="scrim" onClick=${() => setMenuOpen(false)}></div>
     <main class="main">
       ${MODE === 'demo' && html`<div class="demo-banner no-print"><${Icon} name="alert" size=${16} /><span><b>Demo mode</b> — sample orders, saved only in this browser.</span></div>`}
-      <${AskNameCard} />
       <${AlertBanner} />
       <${StorageWarning} storage=${P.storage} print />
       ${page}
@@ -905,7 +886,7 @@ function App() {
         const me = await api.print.me(getKey());
         const orders = await api.print.orders(getKey());
         setP({ loaded: true, role: me.role, name: me.name || '', via: me.via || (getKey() ? 'key' : 'token'), hub: !!me.hub, passcode: !!me.passcode,
-               askName: !!me.askName, adminLinks: me.adminLinks || null, staff: me.staff || [], devices: me.devices || [], hubLinks: !!me.hubLinks, pushKey: me.pushKey || null, questions: me.questions, settings: me.settings || null, botLinked: !!me.settings?.webhookUrl || !!me.botLinked,
+               staff: me.staff || [], devices: me.devices || [], hubLinks: !!me.hubLinks, pushKey: me.pushKey || null, questions: me.questions, settings: me.settings || null, botLinked: !!me.settings?.webhookUrl || !!me.botLinked,
                readyMessage: me.settings?.readyMessage || me.readyMessage || '', newOrderMessage: me.settings?.newOrderMessage || me.newOrderMessage || '',
                notifyOnDone: me.notifyOnDone !== false, storage: me.storage || null,
                orders: orders.sort(byNewest) });
@@ -924,10 +905,10 @@ function App() {
   if (phase.id === 'loading') body = html`<div class="loading"><div class="spinner"></div></div>`;
   else if (phase.id === 'unsupported') body = html`<div class="auth-page"><div class="auth-card card"><${PrintBrand} /><h1>Not available</h1>
     <p class="muted">The Print Hub works with the Cloudflare or Google setup (or the demo). See README.md.</p></div></div>`;
-  else if (phase.id === 'denied') body = html`<div class="auth-page"><div class="auth-card card"><${PrintBrand} /><h1>${getKey() ? 'Link not valid' : 'Welcome'}</h1>
-    <p class="muted">${getKey() ? phase.message : 'Sign in with your name and passcode.'}</p>
-    ${!getKey() && html`<${TeamSignIn} />`}
-    <p class="muted small">${getKey() ? 'Or paste a link you were given:' : 'New here? Ask the owner for the join link. Have a link instead? Paste it here:'}</p>
+  else if (phase.id === 'denied') body = html`<div class="auth-page"><div class="auth-card card"><${PrintBrand} /><h1>${getKey() ? 'This link no longer works' : 'Welcome'}</h1>
+    <p class="muted">${getKey() ? 'Sign in with your name and passcode instead. New to the team? Ask the owner for the join link.' : 'Sign in with your name and passcode.'}</p>
+    <${TeamSignIn} />
+    <p class="muted small">${getKey() ? 'Have a different link? Paste it here:' : 'New here? Ask the owner for the join link. Have a link instead? Paste it here:'}</p>
     <${PasteLink} />
     ${getKey() && html`<button class="btn btn-ghost btn-block" onClick=${() => { setKey(null); location.reload(); }}>Forget this link</button>`}
     <a class="btn btn-ghost btn-block" href="../index.html">Owner sign-in (Creative Hub)</a></div></div>`;

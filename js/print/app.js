@@ -400,7 +400,7 @@ function OrderDetail({ id }) {
     <${PageHead} title=${'Order ' + o.order_no} sub=${`Received ${fmtDate(o.created_at)}, ${new Date(o.created_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })} · ${timeAgo(o.created_at)}`}
         back=${{ href: hrefFor('orders/' + o.status), label: ORDER_STATUS[o.status].label + ' orders' }}>
       <button class="btn btn-ghost" onClick=${() => window.print()}><${Icon} name="printer" size=${16} />Print job sheet</button>
-      ${role === 'master' && html`<button class="btn btn-ghost-danger" onClick=${remove}><${Icon} name="trash" size=${16} />Delete</button>`}
+      <button class="btn btn-ghost-danger" onClick=${remove}><${Icon} name="trash" size=${16} />Delete</button>
     <//>
     <section class="card status-card">
       <div class="status-track">

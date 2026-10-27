@@ -705,7 +705,7 @@ export function createDemoBackend() {
           return clone(o);
         },
         async remove(key, id) {
-          needMaster(key);
+          role(key); // anyone on the team can delete an order
           const o = find(id);
           for (const a of o.answers) {
             const fl = a.type === 'file' ? a.value : a.type === 'voice_text' ? a.value?.files : null;

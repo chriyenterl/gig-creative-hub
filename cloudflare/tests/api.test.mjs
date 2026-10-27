@@ -221,7 +221,11 @@ ok(done.history.at(-1).by === 'Ali (production)', 'history says who did it', don
 ok((await data('printUpdate', { printKey: ADMIN, id: ord.id, patch: { whatsapp: 'completed' } })).history.at(-1).event === 'whatsapp', 'WhatsApp tap logged');
 const again = await data('printNotify', { printKey: ADMIN, id: ord.id, kind: 'completed' });
 ok(again.history.at(-1).ok === false && /No bot/.test(again.history.at(-1).detail), 'send-to-bot without a bot explains why');
-ok((await api('printDelete', { printKey: ADMIN, id: ord.id })).ok === false, 'admin cannot delete orders');
+{
+  const tmp = await data('printAddOrder', { printKey: ADMIN, answers: { q_name: 'Delete me' } });
+  ok((await data('printDelete', { printKey: ADMIN, id: tmp.id })) === true && !(await data('printOrders', { printKey: ADMIN })).some((o) => o.id === tmp.id), 'team members can delete orders');
+  ok((await api('printDelete', { id: ord.id })).ok === false, "but not without a team sign-in");
+}
 ok((await api('printSaveSettings', { printKey: ADMIN, settings: { webhookUrl: '' } })).ok === false, 'admin cannot change settings');
 const saved = await data('printSaveSettings', { printKey: S.masterKey, settings: { webhookUrl: 'https://example.invalid/hook' } });
 ok(saved.webhookUrl === 'https://example.invalid/hook' && !('teamEmails' in saved), 'master saves the bot link (no email settings)');

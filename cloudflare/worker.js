@@ -1267,7 +1267,7 @@ async function printRoute(req, ctx) {
     }
     case 'printUpdate': return printUpdate(actor, req.id, req.patch || {});
     case 'printNotify': return printNotifyAgain(req.id, req.kind);
-    case 'printDelete': needMaster(); return printDelete(req.id);
+    case 'printDelete': return printDelete(req.id); // the team can delete orders too
     case 'printSaveQuestions': needMaster(); return printSaveQuestions(req.questions);
     case 'printSaveSettings': needMaster(); return printSaveSettings(req.settings || {});
     case 'printRegenerate': needMaster(); return printRegenerate(req.which);

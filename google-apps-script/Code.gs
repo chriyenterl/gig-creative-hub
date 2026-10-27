@@ -799,7 +799,7 @@ function printRoute_(req) {
     case 'printOrders': return readTable_('print_orders').rows;
     case 'printUpdate': return withLock_(function () { return printUpdate_(actor, req.id, req.patch || {}); });
     case 'printNotify': return withLock_(function () { return printNotifyAgain_(req.id, req.kind); });
-    case 'printDelete': needMaster(); return withLock_(function () { return printDelete_(req.id); });
+    case 'printDelete': return withLock_(function () { return printDelete_(req.id); });
     case 'printSaveQuestions': needMaster(); return printSaveQuestions_(req.questions);
     case 'printSaveSettings': needMaster(); return withLock_(function () { return printSaveSettings_(req.settings || {}); });
     case 'printRegenerate': needMaster(); return withLock_(function () { return printRegenerate_(req.which); });

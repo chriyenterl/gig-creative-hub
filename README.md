@@ -164,7 +164,7 @@ Open it from the Creative Hub sidebar (**Print Hub**). Owners signed in to the h
 |---|---|---|
 | **Customer order link** — `print/order.html#…` | All customers (one shared link) | Fill in the order form, attach artwork, submit, get an order number |
 | **Join link** — `join.html#…` | Your team (one shared link) | Ask to join with their name + a 6-digit passcode; you approve each person as **Print Hub only** or **Print Hub + Creative Hub** |
-| **Master link** — `print/index.html#k=…` | You | Everything, plus: edit the order form, links & bot settings, delete orders |
+| **Master link** — `print/index.html#k=…` | You | Everything, plus: edit the order form, links & bot settings |
 
 They're all in **Links & access**, in the Creative Hub (owners) and the Print Hub (master), split into three tabs:
 **Team** (the join link, approvals and your team), **Customers** (the customer order link and the messages customers get)

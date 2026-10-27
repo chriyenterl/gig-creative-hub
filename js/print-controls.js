@@ -88,7 +88,6 @@ export function MasterControls({ printKey = null, data, onChange, formHref }) {
         <li><${Icon} name="check" size=${14} />Edit the customer order form</li>
         <li><${Icon} name="check" size=${14} />Manage the team, the join link and the customer link</li>
         <li><${Icon} name="check" size=${14} />The bot connection, customer messages and alert devices</li>
-        <li><${Icon} name="check" size=${14} />Delete orders</li>
       </ul>
       <${LinkCardBody} url=${masterLink(settings.masterKey)} onChange=${() => change('master', 'master link')} />
       <p class="muted small">Signed in to the Creative Hub with your email and password? You already have master access there — no link needed.</p>

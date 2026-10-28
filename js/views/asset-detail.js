@@ -2,7 +2,7 @@
 import { html, useState, useEffect } from '../lib.js';
 import { useStore, api, updateRow, deleteAssets, closeAsset, refreshAsset, refreshStorage, talentById, getState } from '../store.js';
 import { ASSET_STATUS, CATEGORIES, MEDIA, CHANNELS, fmtBytes, fmtDate, timeAgo, parseTags, today, copyText, hrefFor, uid, safeName } from '../util.js';
-import { Icon, Modal, MediaPreview, Field, SeasonSelect, TalentSelect, CoverPicker, useSignedUrls, confirmDialog, toast, toastError, downloadAsset } from '../ui.js';
+import { Icon, Modal, MediaPreview, Field, SeasonSelect, TalentSelect, CoverPicker, useSignedUrls, confirmDialog, toast, toastError, downloadAsset, canPrint, printFile } from '../ui.js';
 import { makePreviews, previewsOn } from '../previews.js';
 import { PhotoPicker } from './photo-picker.js';
 import { FramePicker } from './frame-picker.js';
@@ -184,6 +184,10 @@ export function AssetDetail({ id }) {
         <div class="detail-actions">
           <button class="btn btn-primary" onClick=${() => downloadAsset(asset)}><${Icon} name=${asset.external_url ? 'external' : 'download'} size=${16} />${asset.external_url ? 'Open link' : 'Download'}</button>
           <button class="btn" onClick=${share}><${Icon} name="link" size=${16} />${asset.external_url ? 'Copy link' : 'Copy share link'}</button>
+          ${!asset.external_url && asset.storage_path && !api.media?.(asset) && canPrint(asset.mime_type, asset.file_name) && html`<button class="btn"
+            data-tip="Opens the print window — choose your printer, paper size and copies"
+            onClick=${async () => { try { await printFile({ url: (await api.signedUrls([asset.storage_path]))[asset.storage_path], name: asset.file_name, mime: asset.mime_type }); } catch (e) { toastError(e); } }}>
+            <${Icon} name="printer" size=${16} />Print</button>`}
           ${api.media?.(asset)?.open && html`<a class="btn btn-ghost" href=${api.media(asset).open} target="_blank" rel="noopener"><${Icon} name="external" size=${16} />Open in Drive</a>`}
           <span class="spacer"></span>
           <button class="btn btn-ghost-danger" onClick=${remove}><${Icon} name="trash" size=${16} />Delete</button>

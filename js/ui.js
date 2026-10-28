@@ -263,6 +263,50 @@ function LinkPreview({ asset }) {
   </div>`;
 }
 
+// ── Print a photo or PDF ──────────────────────────────────────────────────
+// Opens the computer's print window for just that file — pick the printer, paper size and copies there.
+// (Websites can't choose a printer themselves.) iPhone/iPad and Safari open the file instead: Share → Print / ⌘P.
+export const canPrint = (mime = '', name = '') => /^image\/(jpe?g|png|gif|webp|bmp|avif)$/i.test(mime || '') || mime === 'application/pdf'
+  || /\.(jpe?g|png|gif|webp|bmp|avif|pdf)$/i.test(name || '');
+const isPdfFile = (mime, name) => mime === 'application/pdf' || /\.pdf$/i.test(name || '');
+const opensInstead = () => /iphone|ipad|ipod|android/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  || /^((?!chrome|chromium|crios|fxios|edg|android).)*safari/i.test(navigator.userAgent);
+const esc = (t) => String(t || '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+export async function printFile({ url, name, mime }) {
+  if (!url) throw new Error("This file isn't ready yet — try again in a moment.");
+  if (opensInstead()) {
+    window.open(url, '_blank', 'noopener');
+    toast(/iphone|ipad|ipod|android/i.test(navigator.userAgent) || navigator.maxTouchPoints > 1 ? 'Opened the file — tap Share, then Print.' : 'Opened the file — press ⌘P to print.');
+    return;
+  }
+  toast('Getting it ready to print…');
+  const frame = document.createElement('iframe');
+  frame.setAttribute('aria-hidden', 'true');
+  frame.style.cssText = 'position:fixed;left:0;bottom:0;width:0;height:0;border:0;visibility:hidden';
+  const loaded = new Promise((resolve, reject) => { frame.onload = resolve; frame.onerror = reject; });
+  let blobUrl = null;
+  if (isPdfFile(mime, name)) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('Could not load the file to print.');
+    blobUrl = URL.createObjectURL(new Blob([await res.blob()], { type: 'application/pdf' }));
+    frame.src = blobUrl;
+  } else {
+    frame.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(name)}</title><style>@page{margin:8mm}html,body{margin:0;height:100%}
+      body{display:flex;align-items:center;justify-content:center}img{max-width:100%;max-height:100vh;object-fit:contain}</style></head>
+      <body><img src="${esc(url)}" alt=""></body></html>`;
+  }
+  document.body.appendChild(frame);
+  await loaded;
+  const w = frame.contentWindow;
+  const img = w.document?.images?.[0];
+  if (img && !img.complete) await new Promise((r) => { img.onload = r; img.onerror = r; });
+  const done = () => setTimeout(() => { frame.remove(); if (blobUrl) URL.revokeObjectURL(blobUrl); }, 1000);
+  w.addEventListener?.('afterprint', done);
+  setTimeout(done, 10 * 60e3); // tidy up even if the print window never reports back
+  w.focus();
+  w.print();
+}
+
 export async function downloadAsset(asset) {
   if (asset.external_url) return void window.open(asset.external_url, '_blank', 'noopener');
   try {

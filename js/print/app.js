@@ -5,7 +5,7 @@ import { loadBackend, MODE } from '../api.js';
 import { setApi } from '../store.js';
 import { CONFIG } from '../../config.js';
 import { fmtDate, timeAgo, copyText, parseHash, hrefFor, go, fmtBytes } from '../util.js';
-import { Icon, PageHead, Field, Empty, Pill, Tabs, MultiChips, DialogHost, ToastHost, TooltipHost, InstallButton, InstallHelpHost, StorageWarning, isInstalledApp, PasscodeInput, confirmDialog, toast, toastError } from '../ui.js';
+import { Icon, PageHead, Field, Empty, Pill, Tabs, MultiChips, DialogHost, ToastHost, TooltipHost, InstallButton, InstallHelpHost, StorageWarning, isInstalledApp, PasscodeInput, confirmDialog, toast, toastError, canPrint, printFile } from '../ui.js';
 import { TeamAccess } from '../team-access.js';
 import { CustomerControls, MasterControls, ACCESS_PAGES } from '../print-controls.js';
 import {
@@ -351,7 +351,10 @@ function FileTiles({ files }) {
       <div class="file-tile-meta"><b class="small break">${f.name}</b><span class="muted small">${fmtBytes(f.size)}</span></div>
       <div class="file-tile-actions no-print">
         ${l && html`<a class="btn btn-sm" href=${l.open} target="_blank" rel="noopener"><${Icon} name="external" size=${13} />Open</a>
-        <a class="btn btn-sm btn-ghost" href=${l.download} download=${f.name} target="_blank" rel="noopener"><${Icon} name="download" size=${13} />Download</a>`}
+        <a class="btn btn-sm btn-ghost" href=${l.download} download=${f.name} target="_blank" rel="noopener"><${Icon} name="download" size=${13} />Download</a>
+        ${canPrint(f.mime, f.name) ? html`<button class="btn btn-sm btn-ghost" onClick=${() => printFile({ url: l.open, name: f.name, mime: f.mime }).catch(toastError)}
+          data-tip="Opens the print window — choose your printer, paper size and copies"><${Icon} name="printer" size=${13} />Print</button>`
+          : html`<span class="muted small" data-tip="Open it in Illustrator, Photoshop or the design app to print">Print from its app</span>`}`}
       </div>
     </div>`;
   })}</div>`;

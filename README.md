@@ -12,6 +12,7 @@ One central place for your marketing media — instead of juggling Google Sheets
 | **Upload links** | Give each creator their **own private link**. They see only an upload page — nothing else. You can **disable**, **change** (new address, old one stops working), set an **expiry**, or **delete** each link at any time. |
 | **Print Hub** | A second app — **GIG Print Hub** (sidebar → **Print Hub**) for print orders. Customers fill in your order form through one shared link; staff see **New → Pending → Completed**, open any order for full details and artwork, add internal notes, and print a job sheet. Your bot is notified when a **new order** comes in and when an order is **completed**, so it can message the customer (e.g. “ready for pickup”). |
 | **Socmed Hub** | Sidebar → **Socmed Hub**: an overview of everything scheduled in **Buffer** — **by brand** and **by platform** (Instagram, Facebook, TikTok, YouTube, Threads…), what's coming up day by day, what failed, and what went out this week. Every channel has **Open in Buffer**. Posting and editing stay in Buffer (or your bot). |
+| **GIG POS** | Sidebar → **GIG POS**: the till for the shops and cafés (like StoreHub) — sell with options and discounts, cash / card / e-wallet / split payments with 5-sen rounding, SST and service charge, receipts (print or WhatsApp), pay-later orders, a kitchen screen, shifts with cash counts, refunds, customers with **cashback**, menu and stock, and sales reports per store. Keeps selling when the internet drops. See [GIG POS](#gig-pos-the-till-for-the-shops-and-cafés). |
 
 ---
 
@@ -21,7 +22,7 @@ One central place for your marketing media — instead of juggling Google Sheets
 |---|---|---|
 | The website (this folder) | **GitHub Pages** | Free |
 | Files (videos, photos, logos, artwork…) | **Cloudflare R2** | First 10 GB free, then about US$0.015 per GB a month (100 GB ≈ US$1.50, 1 TB ≈ US$15). No download fees. |
-| Data (talents, links, approvals, usage, print orders…) | **Cloudflare D1** database | Free (up to 5 GB — that's millions of rows) |
+| Data (talents, links, approvals, usage, print orders, POS sales…) | **Cloudflare D1** database | Free (up to 5 GB — that's millions of rows) |
 | The server that connects them | A **Cloudflare Worker** ([`cloudflare/worker.js`](cloudflare/worker.js)) | Free (up to 100,000 requests a day) |
 
 Cloudflare needs a payment card on file before it turns on R2, even though the first 10 GB are free.
@@ -286,6 +287,69 @@ everything in one place — nothing is posted or changed from the hub.
 - Buffer doesn't support Xiaohongshu or Lemon8, so posts for those don't appear here.
 - The Socmed Hub needs the Cloudflare setup (demo mode shows sample data).
 
+## GIG POS (the till for the shops and cafés)
+
+A point-of-sale for the brands' counters — the same idea as StoreHub, built into the hub. Open it from the Creative Hub
+sidebar (**Hubs → GIG POS**) or go straight to `pos/index.html` on the shop's tablet, phone or computer, and **Install app**
+so it opens full-screen like a normal app.
+
+| Area | What it does |
+|---|---|
+| **Sell** | Product tiles by category (tap to add), search, or **scan a barcode** (any USB/Bluetooth scanner works). Products with **options** (Size, Sugar level, Ice, Toppings +RM1.50…) open a picker. Per-item note and discount, whole-order **discount** (% or RM, with a reason), **Takeaway / Dine-in / Delivery**, table number or name tag, and a **custom item** for anything not on the menu. |
+| **Take payment** | **Cash** with quick-note buttons and change shown big; **Card, DuitNow QR, Touch 'n Go, GrabPay, ShopeePay** (edit the list per store); **split bills**; **pay with cashback**. Cash is rounded to **5 sen** (Malaysia's rule) — card and e-wallets stay exact. **SST** (exclusive or included in prices) and a **service charge** (e.g. dine-in only) are worked out for you. |
+| **Receipts** | Print on any receipt printer the device can print to (80 mm or 58 mm), or send it on **WhatsApp**. Receipts are numbered per store (e.g. `CHJ-000123`) with a daily **order number** to call out (#23). |
+| **Pay later (open orders)** | Save an order and pay at the end — a table that keeps ordering. Add more items any time; pay it from **Open orders**. |
+| **Kitchen** | A kitchen screen (a tablet at the bar or in the kitchen): orders appear as tickets with every option and note, new items are marked, it **chimes** for new orders and turns amber/red when an order is waiting too long. **Ready → Collected**. Print a kitchen docket if you like. |
+| **Shift** | **Open shift** with the cash float → **pay in / pay out** (supplies, petty cash…) → **close shift** by counting notes and coins. The report shows what should be in the drawer, what was counted, and any **over / short**, plus sales by payment method. Print it on the receipt printer. |
+| **Transactions** | Every sale by day — search by receipt no., order no., customer name or phone. Reprint or WhatsApp a receipt, **refund** all or some items (back to stock if you like). A cashier's refund needs a **manager's name + passcode** on the spot. |
+| **Customers & cashback** | Add a customer by phone number at the till. They earn **cashback** (e.g. 5%) to spend on their next visit — shared by outlets of the **same brand**, kept separate between brands. Visits, spend and purchase history for each customer, and **Export for marketing** (CSV for WhatsApp broadcasts, email or ad audiences). |
+| **Menu & stock** | Products, categories and option groups per store; **import from a spreadsheet** or **copy another outlet's menu**. Hide something that's sold out with one switch. Stock tracking for bottled drinks, merchandise or whole cakes: sales count it down, **Received / Wastage / Count** keep it right, with a full history and low-stock warnings. |
+| **Reports** | Net sales, transactions, average ticket, what was collected, discounts, refunds, SST, gross profit (from your costs), cashback — **compared with the period before**. Sales by day and by hour, payment methods, best sellers, categories, stores and cashiers. Any dates, one store or all of them, and export to CSV. |
+| **Works offline** | If the internet drops, keep selling: sales are saved on the device and sent automatically when it's back (cashback and paying open orders need the internet). |
+
+**Who can do what:**
+
+| Person | Signs in with | Can |
+|---|---|---|
+| **Owner** (Creative Hub email + password) | Owner tab on the till, or already signed in to the Creative Hub | Everything, at every store: plus **Stores** (tax, service charge, payment methods, cashback, receipt) and **Team** (who can use the POS) |
+| **Manager** | Name + 6-digit passcode | Sell, shifts, open orders, kitchen, customers — plus **refunds, menu, stock, reports and past shifts** |
+| **Cashier** | Name + 6-digit passcode | Sell, open & close shifts, pay in / out, open orders, kitchen, find and add customers |
+
+Managers and cashiers can be limited to **chosen stores**. The till remembers who signed in on it, so switching cashier is a tap
+(menu → **Switch cashier**).
+
+**Setting it up (owner):**
+1. Open the POS and sign in (Owner tab). It asks you to **create your first store**: name, brand (outlets of the same brand
+   share cashback), receipt code, then SST, service charge, payment methods, cashback and the receipt's top and bottom text.
+   Add more outlets in **Stores**.
+2. **Menu** → add categories, option groups (e.g. *Size: Regular / Large +RM1*, *Sugar level*, *Toppings, up to 3*) and products —
+   or **Import from spreadsheet** (columns *name, price* and optionally *category, cost, code, stock*). For a second outlet of
+   the same brand, **Copy from another store**.
+3. **Your team:** they join with the usual **join link** (Creative Hub → Links & access → Team). Approve shop staff as
+   **POS only** — they see only the till (no Print Hub, no Creative Hub). Then in the POS → **Team**, choose each person's role
+   (**Cashier** or **Manager**) and their stores. Anyone already on the team can be given a POS role there too.
+4. On the shop's tablet: open the POS, **Install app**, and sign in. (Owners: **Copy POS sign-in link** in POS → Team signs a
+   shared counter tablet in as that person without typing the passcode.)
+5. Each day: **Shift → Open shift** (count the float) → sell → **Close shift** (count the drawer).
+
+**Hardware:** any tablet, phone or computer with a browser. **Receipt printer:** set it up as a normal printer on the device
+(USB, Bluetooth or Wi-Fi/AirPrint; 80 mm or 58 mm roll) — the till prints just the receipt. To print without the print dialog on
+a counter PC, start Chrome with `--kiosk-printing`. **Cash drawer:** use one that opens when the receipt printer prints (set in
+the printer's driver). **Barcode scanner:** any USB/Bluetooth scanner that "types" the code — just scan on the sell screen.
+Card terminals and DuitNow QR are taken on their own device as usual; the till records which method was used.
+
+**Good to know:**
+- Money is stored in sen, so totals never pick up rounding pennies. The server checks every total with the same maths the till
+  uses (`js/pos/model.js`), so what the cashier sees is what's saved.
+- A sale is never charged twice: if the connection drops while paying, the till sends the same sale again and the server
+  recognises it.
+- Reports use the **Malaysia time zone** (change it with a `POS_TIME_ZONE` variable in `wrangler.toml` if a store is elsewhere).
+- Data lives in the same Cloudflare D1 database as everything else (`pos_…` tables) — still free for a busy café for years.
+- **After updating:** run `npx wrangler deploy` in the `cloudflare` folder once, so the server knows the POS (the new tables are
+  created automatically). Until then the POS shows a reminder to update the server.
+- The POS needs the Cloudflare setup (demo mode has three sample stores — Chajo, Walnut Bakery and Ombak Paddle Club — with a
+  week of sales to try everything; **Start the demo again** resets them).
+
 ## Good to know (Cloudflare version)
 
 - **Speed:** saves take a fraction of a second. Big videos upload in 10 MB pieces, and a piece that fails is retried
@@ -338,17 +402,22 @@ js/backend-supabase.js      Optional Supabase connection
 print/index.html            Print Hub — staff app (admin & master)
 print/order.html            Print Hub — customer order form
 print/sw.js                 Lets new-order pop-ups work on Android phones
-manifest.json, print/manifest.json   Make both apps installable (home-screen icon, full-screen)
+manifest.json, print/manifest.json, pos/manifest.json   Make the apps installable (home-screen icon, full-screen)
 icons/                      App icons
 js/print/*.js               Print Hub screens and rules
-cloudflare/worker.js        The Cloudflare server (files in R2, data in D1)
+pos/index.html              GIG POS — the till (sell, shifts, kitchen, customers, menu, reports)
+pos/sw.js                   Lets the till open without internet (sales made offline sync later)
+js/pos/model.js             POS maths shared by the till and the server: prices, SST, rounding, refunds, reports
+js/pos/*.js                 POS screens; js/pos/demo.js is its demo data
+css/pos.css                 POS look & feel (on top of styles.css)
+cloudflare/worker.js        The Cloudflare server (files in R2, data in D1); wrangler bundles js/pos/model.js into it
 cloudflare/wrangler.toml    Its settings for the wrangler tool
 cloudflare/tests/           Server tests (run.sh — uses a local copy, never your real data)
 google-apps-script/Code.gs  Alternative: Google backend — paste into Apps Script
 supabase/schema.sql         Only needed for the Supabase option
 ```
 
-No build step, no npm: plain files that any static host can serve.
+No build step, no npm for the website: plain files that any static host can serve.
 
 ---
 

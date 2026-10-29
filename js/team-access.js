@@ -10,11 +10,13 @@ import { Icon, Pill, confirmDialog, toast, toastError } from './ui.js';
 const SITE = new URL('../', import.meta.url).href; // the website's own folder
 const links = {
   printHub: (key) => SITE + 'print/index.html#k=' + key,
+  pos: (key) => SITE + 'pos/index.html#k=' + key,
   creativeHub: (key) => SITE + 'index.html#k=' + key,
   join: (key) => SITE + 'join.html#' + key,
 };
-const ACCESS = { print: 'Print Hub only', both: 'Print Hub + Creative Hub' };
-const personLink = (s) => (s.hub ? links.creativeHub(s.key) : links.printHub(s.key));
+const ACCESS = { print: 'Print Hub only', both: 'Print Hub + Creative Hub', pos: 'POS only' };
+const personLink = (s) => (s.posOnly ? links.pos(s.key) : s.hub ? links.creativeHub(s.key) : links.printHub(s.key));
+const POS_ROLE = { cashier: 'POS cashier', manager: 'POS manager' };
 
 export function LinkCard({ title, hint, url, active, canDisable, onToggle, onChange, warn }) {
   return html`<section class=${'card access-card' + (active === false ? ' inactive' : '')}>
@@ -51,8 +53,9 @@ export function TeamAccess({ printKey = null, data, onChange }) {
   };
   const toggleJoin = () => runSettings(() => api.print.setActive(printKey, 'join', !settings.joinActive),
     settings.joinActive ? 'Join link turned off — nobody new can ask to join.' : 'Join link is on again.');
-  const approve = (s, hub) => run(() => api.print.staffApprove(printKey, s.id, hub),
-    `${s.name} is in (${hub ? ACCESS.both : ACCESS.print}) — they can sign in with their name and passcode now.`);
+  const approve = (s, hub, pos) => run(() => api.print.staffApprove(printKey, s.id, hub, pos),
+    pos ? `${s.name} is in as a POS cashier — they sign in on the till with their name and passcode. Choose their store in POS → Team.`
+      : `${s.name} is in (${hub ? ACCESS.both : ACCESS.print}) — they can sign in with their name and passcode now.`);
   const decline = async (s) => {
     if (!(await confirmDialog({ title: `Decline ${s.name}?`, message: 'Their request is removed. They can ask again with the join link.', confirmLabel: 'Decline', danger: true }))) return;
     run(() => api.print.staffDelete(printKey, s.id), `${s.name}'s request was declined.`);
@@ -110,6 +113,7 @@ export function TeamAccess({ printKey = null, data, onChange }) {
           <div class="page-actions">
             <button class="btn btn-sm btn-primary" onClick=${() => approve(s, false)}><${Icon} name="check" size=${14} />Approve — ${ACCESS.print}</button>
             ${hubLinks && html`<button class="btn btn-sm btn-primary" onClick=${() => approve(s, true)}><${Icon} name="check" size=${14} />Approve — ${ACCESS.both}</button>`}
+            ${hubLinks && html`<button class="btn btn-sm btn-primary" onClick=${() => approve(s, false, true)} data-tip="A cashier at the till: they only see the POS"><${Icon} name="check" size=${14} />Approve — ${ACCESS.pos}</button>`}
             <button class="btn btn-sm btn-ghost-danger" onClick=${() => decline(s)}>Decline</button>
           </div>
         </li>`)}</ul>`}
@@ -118,13 +122,14 @@ export function TeamAccess({ printKey = null, data, onChange }) {
         <ul class="staff-list">${members.map((s) => html`<li key=${s.id} class=${s.active ? '' : 'inactive'}>
           <div class="staff-top">
             <b>${s.name}</b><${Pill} tone=${s.active ? 'good' : 'neutral'}>${s.active ? 'Active' : 'Off'}<//>
-            <${Pill} tone=${s.hub ? 'info' : 'neutral'}>${s.hub ? ACCESS.both : ACCESS.print}<//>
+            <${Pill} tone=${s.hub ? 'info' : 'neutral'}>${s.posOnly ? ACCESS.pos : s.hub ? ACCESS.both : ACCESS.print}<//>
+            ${s.pos && !s.posOnly && html`<${Pill} tone="info">+ ${POS_ROLE[s.pos]}<//>`}
             <span class="muted small staff-used">${s.passcode ? 'Passcode' : 'Link only'} · ${s.last_used_at ? 'last in ' + timeAgo(s.last_used_at) : 'not signed in yet'}</span>
             ${s.email && html`<span class="muted small staff-email">${s.email}</span>`}
           </div>
           <div class="page-actions">
             <button class="btn btn-sm" onClick=${() => toggle(s)}><${Icon} name=${s.active ? 'pause' : 'power'} size=${14} />${s.active ? 'Turn off' : 'Turn on'}</button>
-            ${hubLinks && html`<button class="btn btn-sm" onClick=${() => changeAccess(s)}><${Icon} name="key" size=${14} />${s.hub ? 'Make Print Hub only' : 'Add Creative Hub'}</button>`}
+            ${hubLinks && !s.posOnly && html`<button class="btn btn-sm" onClick=${() => changeAccess(s)}><${Icon} name="key" size=${14} />${s.hub ? 'Make Print Hub only' : 'Add Creative Hub'}</button>`}
             ${s.passcode && html`<button class="btn btn-sm" onClick=${() => reset(s)}><${Icon} name="refresh" size=${14} />Reset passcode</button>`}
             <button class="btn btn-sm btn-ghost" disabled=${!s.active} onClick=${() => copyLink(s)}><${Icon} name="link" size=${14} />Copy sign-in link</button>
             <button class="btn btn-sm btn-ghost" onClick=${() => rename(s)}><${Icon} name="edit" size=${14} />Rename</button>

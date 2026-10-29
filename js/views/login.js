@@ -21,9 +21,11 @@ function PasteTeamLink() {
     const m = /#k=([A-Za-z0-9_-]{16,})/.exec(v.trim());
     if (!m) return toastError(new Error('That doesn\'t look like a team link. Copy the whole link you were sent.'));
     if (/\/print\//.test(v)) return location.replace('print/index.html#k=' + m[1]);
+    if (/\/pos\//.test(v)) return location.replace('pos/index.html#k=' + m[1]);
     setBusy(true);
     try { await api.auth.signInWithLink(m[1]); } catch (e) {
       if (e.code === 'PRINT_ONLY') return location.replace('print/index.html#k=' + m[1]);
+      if (e.code === 'POS_ONLY') return location.replace('pos/index.html#k=' + m[1]);
       toastError(e); setBusy(false);
     }
   };

@@ -48,7 +48,7 @@ function ChooseNew() {
     try {
       const user = await api.auth.resetPasscode(resetToken, code);
       history.replaceState(null, '', location.pathname); // the link only works once
-      location.replace(user?.hub === false ? 'print/index.html' : 'index.html');
+      location.replace(user?.posOnly ? 'pos/index.html' : user?.hub === false ? 'print/index.html' : 'index.html');
     } catch (err) { toastError(err); setBusy(false); }
   };
   return html`<form class="auth-card card" onSubmit=${submit}><${Brand} />

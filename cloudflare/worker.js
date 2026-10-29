@@ -3,8 +3,10 @@
  *  GIG Creative Hub — backend on Cloudflare
  *
  *  A Cloudflare Worker (this file) with:
- *    • D1  (binding "DB")    — all the data: talents, links, approvals, usage, print orders…
+ *    • D1  (binding "DB")    — all the data: talents, links, approvals, usage, print orders, POS sales…
  *    • R2  (binding "FILES") — all the files: photos, videos, brand kit, creator uploads, print artwork
+ *
+ *  The POS uses the same price maths as the till: ../js/pos/model.js (wrangler bundles it in on deploy).
  *
  *  It answers the same actions as google-apps-script/Code.gs, so the website works
  *  the same way. Tables are created automatically on the first request.
@@ -18,11 +20,12 @@
  *  Setup and deploy: see README.md → "Going live on Cloudflare".
  * ============================================================================
  */
+import * as POS from '../js/pos/model.js';
 
 const TOKEN_DAYS = 30;           // how long a team login lasts
 const PBKDF2_ROUNDS = 20000;     // password hashing strength (kept modest for the free plan's CPU limit)
 const CHUNK = 10 * 1024 * 1024;  // upload part size — big files are sent in pieces of this size
-const SCHEMA_V = '12';            // bump when SCHEMA changes so new columns get added
+const SCHEMA_V = '13';            // bump when SCHEMA changes so new columns get added
 const GB = 1e9;                  // storage is counted the way Cloudflare bills it (1 GB = 1,000,000,000 bytes)
 const DEFAULT_LIMIT_GB = 10;     // uploads stop here (R2's free allowance) — change it in Settings
 
@@ -50,9 +53,40 @@ const SCHEMA = {
   // hub_access = true opens the Creative Hub as well as the Print Hub. link_key = their personal sign-in link.
   // email is only used to send a "forgot passcode" link (reset_hash / reset_exp hold that one-time link).
   print_staff:  { cols: ['id', 'name', 'login_name', 'email', 'pass_hash', 'pass_salt', 'status', 'link_key', 'is_active', 'hub_access',
-                         'reset_hash', 'reset_exp', 'shared', 'requested_at', 'last_used_at', 'created_at'], bool: ['is_active', 'hub_access', 'shared'] },
+                         'reset_hash', 'reset_exp', 'shared', 'requested_at', 'last_used_at', 'created_at', 'pos_role', 'pos_only', 'pos_stores'],
+                  bool: ['is_active', 'hub_access', 'shared', 'pos_only'], json: ['pos_stores'] },
   // Phones and computers that get a notification for every new order (even with the app closed).
   push_subs:    { cols: ['id', 'endpoint', 'p256dh', 'auth', 'who', 'device', 'access', 'ref', 'key_hash', 'created_at'] },
+
+  // ── GIG POS (money is in sen: RM 4.50 = 450) ──
+  pos_stores:     { cols: ['id', 'name', 'brand', 'code', 'address', 'phone', 'settings', 'is_active', 'sort_order', 'created_at', 'updated_at'],
+                    json: ['settings'], bool: ['is_active'], num: ['sort_order'] },
+  pos_categories: { cols: ['id', 'store_id', 'name', 'color', 'sort_order', 'created_at'], num: ['sort_order'] },
+  pos_products:   { cols: ['id', 'store_id', 'category_id', 'name', 'sku', 'price', 'cost', 'color', 'modifier_ids', 'track_stock', 'stock',
+                           'low_stock', 'is_active', 'sort_order', 'created_at', 'updated_at'],
+                    num: ['price', 'cost', 'stock', 'low_stock', 'sort_order'], bool: ['track_stock', 'is_active'], json: ['modifier_ids'] },
+  // A group of choices for products, e.g. "Sugar level" (pick 1) or "Toppings" (pick up to 3), each with an extra price.
+  pos_modifiers:  { cols: ['id', 'store_id', 'name', 'options', 'min_select', 'max_select', 'sort_order', 'created_at'],
+                    json: ['options'], num: ['min_select', 'max_select', 'sort_order'] },
+  // One row per sale (and per open order / parked bill). items, payments and refunds are kept as they were on the receipt.
+  pos_sales:      { cols: ['id', 'store_id', 'shift_id', 'status', 'receipt_no', 'order_no', 'order_type', 'table_no', 'note',
+                           'customer_id', 'customer_name', 'customer_phone', 'items', 'subtotal', 'discount', 'discount_info', 'service', 'tax',
+                           'tax_included', 'rounding', 'total', 'payments', 'change_due', 'cashback_earned', 'cashback_used', 'refunds', 'refunded',
+                           'kitchen', 'cashier', 'cashier_id', 'local_date', 'local_hour', 'paid_at', 'offline_at', 'created_at', 'updated_at'],
+                    json: ['items', 'payments', 'refunds', 'discount_info'], bool: ['tax_included'],
+                    num: ['order_no', 'subtotal', 'discount', 'service', 'tax', 'rounding', 'total', 'change_due', 'cashback_earned', 'cashback_used', 'refunded', 'local_hour'] },
+  // For reports: one row per item sold or refunded (refunds negative), and one per payment or refund paid out.
+  pos_lines:      { cols: ['id', 'sale_id', 'store_id', 'shift_id', 'kind', 'product_id', 'name', 'category', 'qty', 'net', 'cost', 'cashier',
+                           'local_date', 'local_hour', 'created_at'], num: ['qty', 'net', 'cost', 'local_hour'] },
+  pos_payments:   { cols: ['id', 'sale_id', 'store_id', 'shift_id', 'kind', 'method', 'amount', 'cashier', 'local_date', 'created_at'], num: ['amount'] },
+  pos_shifts:     { cols: ['id', 'store_id', 'status', 'opened_by', 'opened_at', 'opening_float', 'moves', 'closed_by', 'closed_at', 'counted',
+                           'summary', 'note', 'created_at', 'updated_at'], json: ['moves', 'summary'], num: ['opening_float', 'counted'] },
+  pos_customers:  { cols: ['id', 'phone', 'name', 'email', 'birthday', 'notes', 'visits', 'spent', 'last_visit_at', 'last_store_id',
+                           'created_at', 'updated_at'], num: ['visits', 'spent'] },
+  // Cashback balance per customer per brand (outlets of the same brand share it).
+  pos_wallets:    { cols: ['id', 'customer_id', 'brand', 'balance', 'earned', 'used', 'created_at', 'updated_at'], num: ['balance', 'earned', 'used'] },
+  pos_stock_moves: { cols: ['id', 'store_id', 'product_id', 'product_name', 'qty_change', 'reason', 'note', 'sale_id', 'stock_after', 'who', 'created_at'],
+                    num: ['qty_change', 'stock_after'] },
 };
 
 const DEFAULTS = {
@@ -65,6 +99,14 @@ const DEFAULTS = {
   print_orders: { status: 'new', history: [] },
   print_staff:  { is_active: true, hub_access: false, status: 'approved' },
   push_subs:    {},
+  pos_stores:     { is_active: true, sort_order: 0 },
+  pos_categories: { sort_order: 0 },
+  pos_products:   { is_active: true, track_stock: false, stock: 0, sort_order: 0, modifier_ids: [] },
+  pos_modifiers:  { min_select: 0, max_select: 1, sort_order: 0 },
+  pos_sales:      {}, pos_lines: {}, pos_payments: {}, pos_stock_moves: {},
+  pos_shifts:     { moves: [] },
+  pos_customers:  { visits: 0, spent: 0 },
+  pos_wallets:    { balance: 0, earned: 0, used: 0 },
 };
 
 const INDEXES = [
@@ -77,6 +119,23 @@ const INDEXES = [
   'CREATE UNIQUE INDEX IF NOT EXISTS print_staff_login ON print_staff (login_name)',
   'CREATE UNIQUE INDEX IF NOT EXISTS print_staff_email ON print_staff (email)',
   'CREATE UNIQUE INDEX IF NOT EXISTS push_subs_endpoint ON push_subs (endpoint)',
+  'CREATE INDEX IF NOT EXISTS pos_products_store ON pos_products (store_id)',
+  'CREATE INDEX IF NOT EXISTS pos_categories_store ON pos_categories (store_id)',
+  'CREATE INDEX IF NOT EXISTS pos_modifiers_store ON pos_modifiers (store_id)',
+  'CREATE UNIQUE INDEX IF NOT EXISTS pos_sales_receipt ON pos_sales (receipt_no)',
+  'CREATE INDEX IF NOT EXISTS pos_sales_date ON pos_sales (local_date, store_id)',
+  'CREATE INDEX IF NOT EXISTS pos_sales_status ON pos_sales (store_id, status)',
+  'CREATE INDEX IF NOT EXISTS pos_sales_shift ON pos_sales (shift_id)',
+  'CREATE INDEX IF NOT EXISTS pos_sales_customer ON pos_sales (customer_id)',
+  'CREATE INDEX IF NOT EXISTS pos_lines_date ON pos_lines (local_date, store_id)',
+  'CREATE INDEX IF NOT EXISTS pos_lines_shift ON pos_lines (shift_id)',
+  'CREATE INDEX IF NOT EXISTS pos_payments_date ON pos_payments (local_date, store_id)',
+  'CREATE INDEX IF NOT EXISTS pos_payments_shift ON pos_payments (shift_id)',
+  'CREATE INDEX IF NOT EXISTS pos_shifts_store ON pos_shifts (store_id, opened_at)',
+  "CREATE UNIQUE INDEX IF NOT EXISTS pos_shifts_one_open ON pos_shifts (store_id) WHERE status = 'open'", // one open shift per store
+  'CREATE UNIQUE INDEX IF NOT EXISTS pos_customers_phone ON pos_customers (phone)',
+  'CREATE UNIQUE INDEX IF NOT EXISTS pos_wallets_brand ON pos_wallets (customer_id, brand)',
+  'CREATE INDEX IF NOT EXISTS pos_stock_moves_store ON pos_stock_moves (store_id, created_at)',
 ];
 
 const SEED_SEASONS = [
@@ -152,7 +211,7 @@ async function route(req, ctx) {
   if (a === 'status') return { needsSetup: (await count('team_members')) === 0, emailReset: emailReady() };
   if (a === 'setupAdmin') return setupAdmin(req);
   if (a === 'login') return login(req);
-  if (a === 'linkLogin') return linkLogin(req.linkKey);
+  if (a === 'linkLogin') return linkLogin(req.linkKey, req.app);
   if (a === 'passcodeLogin') return passcodeLogin(req);
   if (a === 'joinInfo') return { ok: await joinKeyOk(req.joinKey) };
   if (a === 'joinRequest') return joinRequest(req, ctx);
@@ -168,6 +227,8 @@ async function route(req, ctx) {
 
   // ── Team only ──
   const me = await verify(req.token);
+  if (a.startsWith('pos')) return posRoute(req, me);
+  if (me.viaLink && me.posOnly && a !== 'me') fail('Your access is for the POS only.', 'POS_ONLY');
   if (me.viaLink && !me.hub && a !== 'me') fail('Your access is for the Print Hub only.', 'PRINT_ONLY');
   const ownersOnly = (what) => { if (me.viaLink) fail(`Only owners (who sign in with a password) can ${what}.`); };
   if (a === 'changePassword') ownersOnly('change passwords');
@@ -587,13 +648,15 @@ async function findMember(email) {
 }
 
 function publicMember(m) {
-  if (m.viaLink) return { id: m.id, email: null, name: m.name, created_at: m.created_at, links: null, viaLink: true, hub: m.hub, passcode: m.passcode, resetEmail: m.resetEmail };
+  if (m.viaLink) return { id: m.id, email: null, name: m.name, created_at: m.created_at, links: null, viaLink: true, hub: m.hub, passcode: m.passcode, resetEmail: m.resetEmail,
+    pos: m.pos, posOnly: m.posOnly };
   return { id: m.id, email: m.email, name: m.name, created_at: m.created_at, links: null };
 }
 
 // A team member (not an owner): signed in with their name + passcode, or their personal link.
 const linkUser = (st) => ({ id: 'link:' + st.id, email: null, name: st.name, created_at: st.created_at, viaLink: true,
-  hub: !!st.hub_access, passcode: !!st.pass_hash, resetEmail: st.email || null, staffId: st.id, linkKey: st.link_key });
+  hub: !!st.hub_access, passcode: !!st.pass_hash, resetEmail: st.email || null, staffId: st.id, linkKey: st.link_key,
+  pos: POS_ROLES.includes(st.pos_role) ? st.pos_role : null, posOnly: !!st.pos_only, posStores: st.pos_stores || [] });
 
 async function staffByKey(key) {
   if (!key) return null;
@@ -613,10 +676,13 @@ async function teamSession(st) {
   return { token: payload + '.' + await sign(payload), user: publicMember(linkUser(st)) };
 }
 
-async function linkLogin(key) {
+async function linkLogin(key, app) {
   const st = await staffByKey(key);
   if (!st || !st.is_active || st.status !== 'approved' || st.shared) fail('This link is no longer valid. Please ask for a new one.');
-  if (!st.hub_access) fail('This link opens the Print Hub only.', 'PRINT_ONLY');
+  if (app === 'pos') { // a personal sign-in link opened in the POS (e.g. the shop's tablet)
+    if (!POS_ROLES.includes(st.pos_role)) fail("This person doesn't have POS access yet — the owner can give it in POS → Team.");
+  } else if (st.pos_only) fail('This link opens the POS only.', 'POS_ONLY');
+  else if (!st.hub_access) fail('This link opens the Print Hub only.', 'PRINT_ONLY');
   await touchStaff(st);
   return teamSession(st);
 }
@@ -1172,12 +1238,14 @@ async function printActor(req) {
   if (req.printKey) {
     const st = await staffByKey(req.printKey);
     if (st && st.is_active && st.status === 'approved' && !st.shared) {
+      if (st.pos_only) fail('Your access is for the POS only.', 'POS_ONLY');
       await touchStaff(st);
       return { role: 'admin', who: st.name || 'Admin', access: 'staff', ref: st.id, keyHash: await sha256(st.link_key), via: 'key', hub: st.hub_access };
     }
   }
   if (req.token) {
     const m = await verify(req.token);
+    if (m.viaLink && m.posOnly) fail('Your access is for the POS only.', 'POS_ONLY');
     if (m.viaLink) return { role: 'admin', who: m.name, access: 'staff', ref: m.staffId, keyHash: await sha256(m.linkKey), via: 'token', hub: m.hub, passcode: m.passcode };
     return { role: 'master', who: m.name || m.email, access: 'team', ref: m.email, via: 'token', hub: true };
   }
@@ -1187,7 +1255,8 @@ async function printActor(req) {
 // ── Staff links: one private admin link per person, no account needed ──
 async function staffList() {
   return (await readTable('print_staff', 'WHERE shared IS NULL OR shared = 0')).map((x) => ({ id: x.id, name: x.name, key: x.link_key, active: x.is_active, hub: x.hub_access,
-    status: x.status || 'approved', passcode: !!x.pass_hash, email: x.email, requested_at: x.requested_at, last_used_at: x.last_used_at, created_at: x.created_at }));
+    status: x.status || 'approved', passcode: !!x.pass_hash, email: x.email, requested_at: x.requested_at, last_used_at: x.last_used_at, created_at: x.created_at,
+    pos: x.pos_role || null, posOnly: !!x.pos_only }));
 }
 
 const cleanStaffName = (name) => {
@@ -1212,6 +1281,7 @@ async function staffUpdate(id, patch) {
   }
   if (patch.active !== undefined) p.is_active = !!patch.active;
   if (patch.hub !== undefined) p.hub_access = !!patch.hub;
+  if (patch.hub) p.pos_only = false; // given the Creative Hub: no longer POS only
   await updateRow('print_staff', String(id || ''), p);
   return staffList();
 }
@@ -1231,10 +1301,12 @@ async function staffResetPasscode(id) {
   return { staff: await staffList(), passcode };
 }
 
-async function staffApprove(id, hub) {
+async function staffApprove(id, hub, pos) {
   const st = await getRow('print_staff', String(id || ''));
   if (!st) fail('That request no longer exists.');
-  await updateRow('print_staff', st.id, { status: 'approved', hub_access: !!hub, is_active: true });
+  await updateRow('print_staff', st.id, pos // POS only: a cashier at the till, no Print Hub or Creative Hub
+    ? { status: 'approved', hub_access: false, is_active: true, pos_only: true, pos_role: POS_ROLES.includes(st.pos_role) ? st.pos_role : 'cashier' }
+    : { status: 'approved', hub_access: !!hub, is_active: true });
   return staffList();
 }
 
@@ -1276,7 +1348,7 @@ async function printRoute(req, ctx) {
     case 'printStaffUpdate': needMaster(); return staffUpdate(req.id, req.patch || {});
     case 'printStaffRegenerate': needMaster(); return staffRegenerate(req.id);
     case 'printStaffDelete': needMaster(); await deleteRows('print_staff', [String(req.id || '')]); return staffList();
-    case 'printStaffApprove': needMaster(); return staffApprove(req.id, req.hub);
+    case 'printStaffApprove': needMaster(); return staffApprove(req.id, req.hub, req.pos);
     case 'printStaffResetPasscode': needMaster(); return staffResetPasscode(req.id);
     case 'printPushSubscribe': return pushSubscribe(actor, req.subscription || {}, req.device);
     case 'printPushUnsubscribe': await DB.prepare('DELETE FROM push_subs WHERE endpoint = ?').bind(String(req.endpoint || '')).run(); return true;
@@ -1711,7 +1783,7 @@ async function allowedSubs() {
     else if (sub.access === 'staff') {
       const st = staff.get(sub.ref);
       if (!st || sub.key_hash !== await sha256(st.link_key)) stale.push(sub);
-      else if (st.is_active) out.push(sub);
+      else if (st.is_active && !st.pos_only) out.push(sub); // POS-only people don't get print-order alerts
     } else if (sub.access === 'team') ((await findMember(sub.ref)) ? out : stale).push(sub);
     else stale.push(sub);
   }
@@ -1986,4 +2058,795 @@ async function socmedSaveChannels(map) {
   }
   await setSetting('SOCMED', JSON.stringify(cfg));
   return socmedSetup();
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  GIG POS — the till for the shops and cafés (pos/index.html)
+//
+//  Owners (email + password) can do everything. Team members get a POS role from an owner (POS → Team):
+//  cashier (sell, shifts, open orders, kitchen, customers) or manager (+ refunds, menu, stock, reports),
+//  for every store or only chosen ones. A cashier's refund needs a manager's name + passcode on the spot.
+//  Totals, rounding and refunds come from js/pos/model.js — the file the till itself runs — so what the
+//  cashier sees is exactly what gets saved. Money is in sen (RM 4.50 = 450).
+// ════════════════════════════════════════════════════════════════════════════
+const POS_ROLES = ['cashier', 'manager'];
+const SOLD = "('paid', 'partially_refunded', 'refunded')";
+const MENU = { category: 'pos_categories', product: 'pos_products', modifier: 'pos_modifiers' };
+const posTz = () => ENV.POS_TIME_ZONE || POS.TIME_ZONE;
+const posCountry = () => ENV.COUNTRY_CODE || '60';
+const posText = (v, n) => String(v == null ? '' : v).trim().slice(0, n);
+const posId = (v) => (/^[A-Za-z0-9-]{8,64}$/.test(String(v || '')) ? String(v) : uuid());
+const posMoney = (v, what = 'amount') => {
+  if (v === '' || v == null) return null;
+  const n = Math.round(Number(v));
+  if (!Number.isFinite(n) || n < 0 || n > 1e9) fail(`Check the ${what}.`);
+  return n;
+};
+
+// Who is at the till: an owner, or a team member with a POS role (for all stores, or some).
+function posActor(me) {
+  if (!me.viaLink) return { role: 'owner', who: me.name || me.email, id: me.email, stores: null, hub: true };
+  if (!POS_ROLES.includes(me.pos)) fail("You don't have access to the POS yet — ask the owner to give you a POS role.", 'POS_AUTH');
+  return { role: me.pos, who: me.name, id: me.staffId, stores: me.posStores && me.posStores.length ? me.posStores : null, hub: !!me.hub };
+}
+const isManager = (a) => a.role === 'owner' || a.role === 'manager';
+const needManager = (a, what) => { if (!isManager(a)) fail(`Only a manager or owner can ${what}.`); };
+const needOwner = (a, what) => { if (a.role !== 'owner') fail(`Only owners can ${what}.`); };
+const canStore = (a, id) => !a.stores || a.stores.includes(id);
+
+async function posStore(actor, id, { active = true } = {}) {
+  const s = await getRow('pos_stores', String(id || ''));
+  if (!s || !canStore(actor, s.id)) fail('That store no longer exists.');
+  if (active && !s.is_active) fail('That store is switched off. An owner can switch it on in POS → Stores.');
+  return { ...s, settings: POS.cleanSettings(s.settings) };
+}
+
+async function posRoute(req, me) {
+  const actor = posActor(me);
+  const a = req.action;
+  switch (a) {
+    case 'posMe': return posMe(actor);
+    // Stores & team (owners)
+    case 'posSaveStore': needOwner(actor, 'change stores'); return posSaveStore(req.store || {});
+    case 'posTeam': needOwner(actor, 'manage POS access'); return posTeam();
+    case 'posTeamSet': needOwner(actor, 'manage POS access'); return posTeamSet(req.id, req.patch || {});
+    // Menu
+    case 'posCatalog': return posCatalog(actor, req.storeId);
+    case 'posSaveItem': needManager(actor, 'change the menu'); return posSaveItem(actor, req.kind, req.row || {});
+    case 'posDeleteItem': needManager(actor, 'change the menu'); return posDeleteItem(actor, req.kind, req.id);
+    case 'posImport': needManager(actor, 'change the menu'); return posImport(actor, req.storeId, req.rows);
+    case 'posCopyMenu': needManager(actor, 'change the menu'); return posCopyMenu(actor, req.fromId, req.toId);
+    // Selling
+    case 'posCheckout': return posCheckout(actor, req.sale || {});
+    case 'posSaveOpen': return posSaveOpen(actor, req.order || {});
+    case 'posOpenOrders': {
+      const s = await posStore(actor, req.storeId, { active: false });
+      await posUnstick(s.id);
+      return readTable('pos_sales', "WHERE store_id = ? AND status = 'open'", s.id);
+    }
+    case 'posCancelOpen': return posCancelOpen(actor, req.id, req.reason);
+    case 'posKitchen': return posKitchen(actor, req.storeId);
+    case 'posKitchenSet': return posKitchenSet(actor, req.id, req.status);
+    case 'posSales': return posSales(actor, req);
+    case 'posSale': return posSaleFor(actor, req.id);
+    case 'posRefund': return posRefund(actor, req);
+    // Shifts
+    case 'posShift': return posShift(actor, req.storeId);
+    case 'posOpenShift': return posOpenShift(actor, req.storeId, req.float);
+    case 'posCashMove': return posCashMove(actor, req.shiftId, req.move || {});
+    case 'posCloseShift': return posCloseShift(actor, req.shiftId, req.counted, req.note);
+    case 'posShifts': needManager(actor, 'see past shifts'); return posShifts(actor, req.storeId);
+    case 'posShiftReport': needManager(actor, 'see past shifts'); return posShiftReport(actor, req.id);
+    // Customers & cashback
+    case 'posFindCustomers': return posFindCustomers(actor, req.q, req.storeId);
+    case 'posCustomer': return posCustomer(actor, req.id, req.storeId);
+    case 'posSaveCustomer': return posSaveCustomer(req.customer || {});
+    case 'posCustomers': needManager(actor, 'see the customer list'); return posCustomers(actor);
+    // Stock
+    case 'posStockAdjust': needManager(actor, 'change stock'); return posStockAdjust(actor, req);
+    case 'posStockMoves': needManager(actor, 'see stock history'); return posStockMoves(actor, req.storeId, req.productId);
+    // Reports
+    case 'posReport': needManager(actor, 'see reports'); return posReport(actor, req.storeId, req.from, req.to);
+  }
+  fail('Unknown action: ' + a);
+}
+
+const byOrder = (a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0) || String(a.name).localeCompare(String(b.name));
+
+async function posMe(actor) {
+  const stores = (await readTable('pos_stores')).filter((s) => canStore(actor, s.id) && (actor.role === 'owner' || s.is_active))
+    .sort(byOrder).map((s) => ({ ...s, settings: POS.cleanSettings(s.settings) }));
+  return { role: actor.role, name: actor.who, staffId: actor.role === 'owner' ? null : actor.id, stores, timeZone: posTz(),
+           allStores: !actor.stores, countryCode: posCountry(), hub: actor.hub };
+}
+
+// ── Stores (owners) ──
+async function posSaveStore(input) {
+  const name = posText(input.name, 60);
+  if (!name) fail('Give the store a name.');
+  const id = input.id ? String(input.id) : null;
+  const ex = id ? await getRow('pos_stores', id) : null;
+  if (id && !ex) fail('That store no longer exists.');
+  if (!ex && (await count('pos_stores')) >= 50) fail('You can have up to 50 stores.');
+  // Receipt numbers start with the store's code (e.g. CHJ-000123), so each store needs its own.
+  const typed = String(input.code || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+  const taken = async (c) => !!(await DB.prepare('SELECT 1 FROM pos_stores WHERE code = ? AND id <> ?').bind(c, id || '').first());
+  let code = typed;
+  if (typed && (await taken(typed))) fail(`Another store already uses the receipt code ${typed} — pick a different one.`);
+  if (!code) {
+    const base = (name.split(/\s+/).map((w) => w[0]).join('').toUpperCase().replace(/[^A-Z0-9]/g, '') || 'S').slice(0, 4);
+    code = base;
+    for (let i = 2; await taken(code); i++) code = base + i;
+  }
+  const row = { name, code, brand: posText(input.brand, 60) || null, address: posText(input.address, 300) || null, phone: posText(input.phone, 40) || null,
+    settings: POS.cleanSettings(input.settings), is_active: input.is_active !== false, sort_order: Math.round(Number(input.sort_order) || 0) };
+  const saved = ex ? await updateRow('pos_stores', ex.id, row) : await insertRow('pos_stores', row);
+  return { ...saved, settings: POS.cleanSettings(saved.settings) };
+}
+
+// ── Team: who can use the POS (owners) ──
+async function posTeam() {
+  return (await readTable('print_staff', "WHERE status = 'approved' AND (shared IS NULL OR shared = 0)")).map((x) => ({
+    id: x.id, name: x.name, active: x.is_active, hub: x.hub_access, pos: POS_ROLES.includes(x.pos_role) ? x.pos_role : null,
+    posOnly: !!x.pos_only, stores: x.pos_stores || [], key: x.link_key, last_used_at: x.last_used_at }));
+}
+async function posTeamSet(id, patch) {
+  const st = await getRow('print_staff', String(id || ''));
+  if (!st || st.status !== 'approved') fail('That person is no longer on the team.');
+  const p = {};
+  if (patch.pos !== undefined) p.pos_role = POS_ROLES.includes(patch.pos) ? patch.pos : null;
+  if (patch.stores !== undefined) {
+    const ids = new Set((await readTable('pos_stores')).map((s) => s.id));
+    p.pos_stores = (Array.isArray(patch.stores) ? patch.stores : []).map(String).filter((x) => ids.has(x));
+  }
+  if (patch.posOnly !== undefined) p.pos_only = !!patch.posOnly;
+  const role = p.pos_role !== undefined ? p.pos_role : st.pos_role;
+  if (p.pos_only && !role) fail('Give them a POS role first.');
+  if (p.pos_only) p.hub_access = false; // POS only: no Creative Hub (and no Print Hub)
+  if (role === null && st.pos_only) p.pos_only = false; // POS access taken away: back to the Print Hub
+  await updateRow('print_staff', st.id, p);
+  return posTeam();
+}
+
+// ── Menu: categories, products, modifier groups ──
+async function posCatalog(actor, storeId) {
+  const s = await posStore(actor, storeId, { active: false });
+  const [categories, products, modifiers] = await Promise.all(['pos_categories', 'pos_products', 'pos_modifiers']
+    .map((t) => readTable(t, 'WHERE store_id = ?', s.id)));
+  return { store_id: s.id, categories: categories.sort(byOrder), products: products.sort(byOrder), modifiers: modifiers.sort(byOrder) };
+}
+
+async function posSaveItem(actor, kind, row) {
+  const t = MENU[kind];
+  if (!t) fail('Unknown menu item.');
+  const ex = row.id ? await getRow(t, String(row.id)) : null;
+  if (row.id && !ex) fail('That item no longer exists.');
+  const store = await posStore(actor, ex ? ex.store_id : row.store_id, { active: false });
+  const p = { store_id: store.id, sort_order: Math.round(Number(row.sort_order) || 0) };
+  if (kind === 'category') {
+    p.name = posText(row.name, 40);
+    if (!p.name) fail('Give the category a name.');
+    p.color = row.color || null;
+    checkColour(p.color);
+  } else if (kind === 'modifier') {
+    p.name = posText(row.name, 40);
+    if (!p.name) fail('Give the group a name (e.g. Sugar level).');
+    const seen = new Set();
+    p.options = (Array.isArray(row.options) ? row.options : []).slice(0, 40).map((o) => {
+      let oid = posText(o.id, 24).replace(/[^\w-]/g, '') || uuid().slice(0, 8);
+      while (seen.has(oid)) oid = uuid().slice(0, 8);
+      seen.add(oid);
+      return { id: oid, name: posText(o.name, 40), price: posMoney(o.price || 0, 'price of ' + (o.name || 'a choice')) };
+    }).filter((o) => o.name);
+    if (!p.options.length) fail('Add at least one choice.');
+    p.min_select = Math.min(p.options.length, Math.max(0, Math.round(Number(row.min_select) || 0)));
+    p.max_select = Math.min(p.options.length, Math.max(1, p.min_select, Math.round(Number(row.max_select) || 1)));
+  } else {
+    p.name = posText(row.name, 80);
+    if (!p.name) fail('Give the product a name.');
+    if (!ex && (await DB.prepare('SELECT COUNT(*) AS n FROM pos_products WHERE store_id = ?').bind(store.id).first()).n >= 3000) fail('A store can have up to 3,000 products.');
+    p.category_id = null;
+    if (row.category_id) {
+      const c = await getRow('pos_categories', String(row.category_id));
+      if (!c || c.store_id !== store.id) fail("Pick one of this store's categories.");
+      p.category_id = c.id;
+    }
+    p.price = posMoney(row.price, 'price');
+    if (p.price == null) fail('Give it a price (0 is fine for something free).');
+    p.cost = posMoney(row.cost, 'cost');
+    p.sku = posText(row.sku, 40) || null;
+    if (p.sku && await DB.prepare('SELECT 1 FROM pos_products WHERE store_id = ? AND sku = ? AND id <> ?').bind(store.id, p.sku, ex ? ex.id : '').first()) {
+      fail(`Another product already has the code ${p.sku}.`);
+    }
+    p.color = row.color || null;
+    checkColour(p.color);
+    const mods = new Set((await readTable('pos_modifiers', 'WHERE store_id = ?', store.id)).map((m) => m.id));
+    p.modifier_ids = (Array.isArray(row.modifier_ids) ? row.modifier_ids : []).map(String).filter((x) => mods.has(x));
+    p.track_stock = !!row.track_stock;
+    p.low_stock = row.low_stock === '' || row.low_stock == null ? null : Math.max(0, Math.round(Number(row.low_stock) || 0));
+    if (!ex) p.stock = Math.round(Number(row.stock) || 0); // after that, stock changes through Stock (so it's all in the history)
+    p.is_active = row.is_active !== false;
+  }
+  return ex ? updateRow(t, ex.id, p) : insertRow(t, p);
+}
+
+async function posDeleteItem(actor, kind, id) {
+  const t = MENU[kind];
+  if (!t) fail('Unknown menu item.');
+  const ex = await getRow(t, String(id || ''));
+  if (!ex) fail('That item no longer exists.');
+  await posStore(actor, ex.store_id, { active: false });
+  if (kind === 'category') await DB.prepare('UPDATE pos_products SET category_id = NULL WHERE category_id = ?').bind(ex.id).run();
+  if (kind === 'modifier') {
+    for (const pr of await readTable('pos_products', 'WHERE store_id = ? AND modifier_ids LIKE ?', ex.store_id, '%"' + ex.id + '"%')) {
+      await updateRow('pos_products', pr.id, { modifier_ids: (pr.modifier_ids || []).filter((x) => x !== ex.id) });
+    }
+  }
+  await deleteRows(t, [ex.id]); // past sales keep the names and prices they had
+  return posCatalog(actor, ex.store_id);
+}
+
+// Add many products at once (from a spreadsheet): rows of { name, category, price, cost, sku, stock } — money in sen.
+async function posImport(actor, storeId, rows) {
+  const store = await posStore(actor, storeId, { active: false });
+  rows = (Array.isArray(rows) ? rows : []).slice(0, 1000);
+  if (!rows.length) fail('There are no products in that file.');
+  const cats = await readTable('pos_categories', 'WHERE store_id = ?', store.id);
+  const catId = new Map(cats.map((c) => [c.name.toLowerCase(), c.id]));
+  const have = new Set((await readTable('pos_products', 'WHERE store_id = ?', store.id)).map((p) => p.name.toLowerCase()));
+  const newCats = [...new Set(rows.map((r) => posText(r.category, 40)).filter((c) => c && !catId.has(c.toLowerCase())))];
+  if (newCats.length) {
+    for (const c of await insertRows('pos_categories', newCats.map((name, i) => ({ store_id: store.id, name, sort_order: cats.length + i + 1 })))) {
+      catId.set(c.name.toLowerCase(), c.id);
+    }
+  }
+  const out = [];
+  let skipped = 0;
+  for (const r of rows) {
+    const name = posText(r.name, 80);
+    const price = Math.round(Number(r.price));
+    if (!name || !Number.isFinite(price) || price < 0 || price > 1e9 || have.has(name.toLowerCase())) { skipped++; continue; }
+    have.add(name.toLowerCase());
+    const stock = r.stock === '' || r.stock == null ? null : Math.round(Number(r.stock));
+    const cost = Math.round(Number(r.cost));
+    out.push({ store_id: store.id, name, price, cost: r.cost === '' || r.cost == null || !Number.isFinite(cost) || cost < 0 ? null : cost,
+      sku: posText(r.sku, 40) || null, category_id: catId.get(posText(r.category, 40).toLowerCase()) || null,
+      track_stock: Number.isFinite(stock), stock: Number.isFinite(stock) ? stock : 0, is_active: true, modifier_ids: [] });
+  }
+  await insertRows('pos_products', out);
+  return { added: out.length, skipped, catalog: await posCatalog(actor, store.id) };
+}
+
+// Copy one store's menu into another (e.g. a new outlet of the same brand). Names already there are skipped.
+async function posCopyMenu(actor, fromId, toId) {
+  const from = await posCatalog(actor, fromId);
+  const to = await posCatalog(actor, toId);
+  if (from.store_id === to.store_id) fail('Pick a different store to copy from.');
+  const catMap = new Map(), modMap = new Map();
+  const toCats = new Map(to.categories.map((c) => [c.name.toLowerCase(), c.id]));
+  for (const c of from.categories) {
+    catMap.set(c.id, toCats.get(c.name.toLowerCase()) || (await insertRow('pos_categories', { store_id: to.store_id, name: c.name, color: c.color, sort_order: c.sort_order })).id);
+  }
+  const toMods = new Map(to.modifiers.map((m) => [m.name.toLowerCase(), m.id]));
+  for (const m of from.modifiers) {
+    modMap.set(m.id, toMods.get(m.name.toLowerCase()) || (await insertRow('pos_modifiers', { store_id: to.store_id, name: m.name, options: m.options,
+      min_select: m.min_select, max_select: m.max_select, sort_order: m.sort_order })).id);
+  }
+  const have = new Set(to.products.map((p) => p.name.toLowerCase()));
+  const rows = from.products.filter((p) => !have.has(p.name.toLowerCase())).map((p) => ({
+    store_id: to.store_id, name: p.name, price: p.price, cost: p.cost, sku: p.sku, color: p.color, category_id: catMap.get(p.category_id) || null,
+    modifier_ids: (p.modifier_ids || []).map((x) => modMap.get(x)).filter(Boolean), track_stock: p.track_stock, stock: 0, low_stock: p.low_stock,
+    is_active: p.is_active, sort_order: p.sort_order }));
+  await insertRows('pos_products', rows);
+  return { added: rows.length, catalog: await posCatalog(actor, to.store_id) };
+}
+
+// ── Selling ──
+// Receipt numbers count up per receipt code (CHJ-000001…); order numbers (to call out) start at 1 each day.
+async function posNextReceipt(store) {
+  const r = await DB.prepare("INSERT INTO settings (key, value) VALUES (?, '1') ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1 RETURNING value")
+    .bind('POS_NO:' + store.code).first();
+  return `${store.code}-${String(r.value).padStart(6, '0')}`;
+}
+async function posNextOrderNo(store, date) {
+  const r = await DB.prepare(`INSERT INTO settings (key, value) VALUES (?, ? || ':1') ON CONFLICT(key) DO UPDATE SET value =
+    CASE WHEN substr(value, 1, 10) = ? THEN ? || ':' || (CAST(substr(value, 12) AS INTEGER) + 1) ELSE ? || ':1' END RETURNING value`)
+    .bind('POS_Q:' + store.id, date, date, date, date).first();
+  return Number(String(r.value).slice(11));
+}
+
+function posCleanItems(items) {
+  if (!Array.isArray(items) || !items.length) fail('The order is empty — add something first.');
+  if (items.length > 300) fail('That order has too many lines.');
+  return items.map((it) => {
+    const name = posText(it.name, 80);
+    if (!name) fail('An item has no name.');
+    const qty = Math.round(Number(it.qty));
+    if (!(qty >= 1 && qty <= 9999)) fail(`Check the quantity of ${name}.`);
+    const price = Math.round(Number(it.price));
+    if (!(price >= 0 && price <= 1e8)) fail(`Check the price of ${name}.`);
+    const mods = (Array.isArray(it.mods) ? it.mods : []).slice(0, 30).map((m) => ({
+      group: posText(m.group, 40) || null, name: posText(m.name, 40), price: Math.round(Number(m.price) || 0) })).filter((m) => m.name);
+    if (price + mods.reduce((t, m) => t + m.price, 0) < 0) fail(`Check the price of ${name}.`);
+    const d = it.discount && typeof it.discount === 'object' && Number(it.discount.value) > 0
+      ? { type: it.discount.type === 'percent' ? 'percent' : 'amount', value: Math.min(it.discount.type === 'percent' ? 100 : 1e9, Number(it.discount.value)) } : null;
+    return { key: posText(it.key, 40) || uuid().slice(0, 8), product_id: it.product_id ? String(it.product_id) : null, name, price, qty, mods,
+      note: posText(it.note, 200) || null, discount: d, sent_at: typeof it.sent_at === 'string' ? it.sent_at.slice(0, 30) : null };
+  });
+}
+const posCleanDiscount = (d) => (d && typeof d === 'object' && Number(d.value) > 0
+  ? { type: d.type === 'percent' ? 'percent' : 'amount', value: Math.min(d.type === 'percent' ? 100 : 1e9, Number(d.value)), reason: posText(d.reason, 80) || null }
+  : null);
+
+// Category, cost and stock tracking of the products on an order (by id, within the store).
+async function posProductInfo(storeId, lines) {
+  const ids = [...new Set(lines.map((l) => l.product_id).filter(Boolean))];
+  const out = new Map();
+  if (!ids.length) return out;
+  const cats = new Map((await readTable('pos_categories', 'WHERE store_id = ?', storeId)).map((c) => [c.id, c.name]));
+  await inGroups(ids, async (g, q) => {
+    for (const r of (await DB.prepare(`SELECT id, category_id, cost, track_stock FROM pos_products WHERE store_id = ? AND id IN (${q})`).bind(storeId, ...g).all()).results) {
+      out.set(r.id, { category: cats.get(r.category_id) || null, cost: Number(r.cost) || 0, track: r.track_stock === 1 });
+    }
+  });
+  return out;
+}
+
+const stockMoveStmt = (m) => DB.prepare(`INSERT INTO pos_stock_moves (id, store_id, product_id, product_name, qty_change, reason, note, sale_id, stock_after, who, created_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, (SELECT stock FROM pos_products WHERE id = ?), ?, ?)`)
+  .bind(uuid(), m.store_id, m.product_id, m.name, m.change, m.reason, m.note || null, m.sale_id || null, m.product_id, m.who, m.at);
+// Changes a customer's cashback for a brand (never below zero). earned / used keep running totals.
+const walletStmt = (cid, brand, delta, earned, used, at) => DB.prepare(`INSERT INTO pos_wallets (id, customer_id, brand, balance, earned, used, created_at, updated_at)
+  VALUES (?, ?, ?, MAX(0, ?), ?, ?, ?, ?) ON CONFLICT(customer_id, brand) DO UPDATE SET balance = MAX(0, balance + ?), earned = earned + ?, used = used + ?, updated_at = ?`)
+  .bind(uuid(), cid, brand, delta, Math.max(0, earned), Math.max(0, used), at, at, delta, earned, used, at);
+const salePlaceholders = (t) => SCHEMA[t].cols.map((c) => `${c} = ?`).join(', ');
+const saleUpdateStmt = (row, status) => DB.prepare(`UPDATE pos_sales SET ${salePlaceholders('pos_sales')} WHERE id = ? AND status = ?`)
+  .bind(...SCHEMA.pos_sales.cols.map((c) => toDb('pos_sales', c, row[c])), row.id, status);
+
+// An open order stays "paying" only while its payment is being saved; if that was cut off, it's open again after 2 minutes.
+const posUnstick = (storeId) => DB.prepare("UPDATE pos_sales SET status = 'open' WHERE store_id = ? AND status = 'paying' AND updated_at < ?")
+  .bind(storeId, new Date(Date.now() - 120e3).toISOString()).run();
+
+async function posOpenShiftRow(storeId) {
+  const r = await DB.prepare("SELECT * FROM pos_shifts WHERE store_id = ? AND status = 'open'").bind(storeId).first();
+  return r ? rowOut('pos_shifts', r) : null;
+}
+
+// Builds the sale's lines (what's on the receipt) from the priced cart.
+const saleLines = (priced) => priced.lines.map((l) => ({ key: l.key, product_id: l.product_id, name: l.name, price: l.price, qty: l.qty, mods: l.mods,
+  note: l.note, disc: l.disc, unit: l.unit, gross: l.gross, discount: l.discount, net: l.net, sent_at: l.sent_at || null }));
+
+// Takes payment for a new sale, or for an open order (same id). Safe to send twice: the second time
+// returns the sale that was already saved (the till retries after a dropped connection).
+async function posCheckout(actor, input) {
+  const id = posId(input.id);
+  let ex = await getRow('pos_sales', id);
+  if (ex && ex.status === 'paying') { await posUnstick(ex.store_id); ex = await getRow('pos_sales', id); }
+  if (ex && ex.status !== 'open') {
+    if (ex.status === 'cancelled') fail('This order was cancelled.');
+    if (ex.status === 'paying') fail('This order is being paid on another device.');
+    return ex;
+  }
+  const store = await posStore(actor, ex ? ex.store_id : input.store_id);
+  const st = store.settings;
+  const shift = await posOpenShiftRow(store.id);
+  if (!shift) fail('Open a shift before taking payments (menu → Shift).', 'NO_SHIFT');
+  const orderType = st.orderTypes.includes(input.order_type) ? input.order_type : st.orderTypes[0];
+  const priced = POS.priceCart({ items: posCleanItems(input.items), discount: posCleanDiscount(input.discount), order_type: orderType }, st);
+  if (input.client_total != null && Math.round(Number(input.client_total)) !== priced.total) {
+    fail('The total on the till is out of date — please refresh the page and try again.', 'PRICE_CHANGED');
+  }
+  const brand = POS.brandKey(store);
+  let customer = null, wallet = null;
+  if (input.customer_id) {
+    customer = await getRow('pos_customers', String(input.customer_id));
+    if (!customer) fail('That customer no longer exists — remove them from the sale.');
+    wallet = await DB.prepare('SELECT balance FROM pos_wallets WHERE customer_id = ? AND brand = ?').bind(customer.id, brand).first();
+  }
+  let pay;
+  try { pay = POS.checkPayments(priced.total, input.payments, st, { cashback: wallet ? Number(wallet.balance) || 0 : 0 }); } catch (e) { fail(e.message); }
+  if (pay.cashbackUsed && !customer) fail('Add the customer to pay with their cashback.');
+  const earned = customer ? POS.cashbackEarned(pay.paid, pay.cashbackUsed, st) : 0;
+  const at = nowIso();
+  const local = POS.localParts(at, posTz());
+  if (ex) { // claim the open order so two tills can't take payment for it at the same time
+    const c = await DB.prepare("UPDATE pos_sales SET status = 'paying', updated_at = ? WHERE id = ? AND status = 'open'").bind(at, id).run();
+    if (!c.meta.changes) fail('This order is being paid on another device.');
+  }
+  try {
+    const items = saleLines(priced);
+    let kitchen = ex ? ex.kitchen : null;
+    if (st.kitchen) { let fresh = false; items.forEach((l) => { if (!l.sent_at) { l.sent_at = at; fresh = true; } }); if (fresh || !kitchen) kitchen = 'new'; }
+    const row = {
+      id, store_id: store.id, shift_id: shift.id, status: 'paid', receipt_no: await posNextReceipt(store),
+      order_no: (ex && ex.order_no) || await posNextOrderNo(store, local.date), order_type: orderType,
+      table_no: posText(input.table_no, 20) || null, note: posText(input.note, 300) || null,
+      customer_id: customer ? customer.id : null, customer_name: customer ? customer.name : null, customer_phone: customer ? customer.phone : null,
+      items, subtotal: priced.subtotal, discount: priced.discount, discount_info: posCleanDiscount(input.discount), service: priced.service, tax: priced.tax,
+      tax_included: priced.tax_included, rounding: pay.rounding, total: priced.total, payments: pay.payments, change_due: pay.change,
+      cashback_earned: earned, cashback_used: pay.cashbackUsed, refunds: [], refunded: 0, kitchen,
+      cashier: actor.who, cashier_id: actor.id, local_date: local.date, local_hour: local.hour, paid_at: at,
+      offline_at: input.offline_at ? posText(input.offline_at, 30) : null, created_at: ex ? ex.created_at : at, updated_at: at,
+    };
+    const info = await posProductInfo(store.id, items);
+    const stmts = [ex ? saleUpdateStmt(row, 'paying') : insertStmt('pos_sales', row)];
+    const base = { sale_id: id, store_id: store.id, shift_id: shift.id, cashier: actor.who, local_date: local.date, created_at: at };
+    for (const l of items) {
+      const pi = info.get(l.product_id);
+      stmts.push(insertStmt('pos_lines', { ...base, id: uuid(), kind: 'sale', product_id: l.product_id, name: l.name, category: pi ? pi.category : null,
+        qty: l.qty, net: l.net, cost: pi ? pi.cost * l.qty : 0, local_hour: local.hour }));
+    }
+    for (const p of pay.payments) stmts.push(insertStmt('pos_payments', { ...base, id: uuid(), kind: 'sale', method: p.method, amount: p.amount }));
+    const sold = new Map();
+    for (const l of items) if (info.get(l.product_id)?.track) sold.set(l.product_id, { name: l.name, qty: (sold.get(l.product_id)?.qty || 0) + l.qty });
+    for (const [pid, s] of sold) {
+      stmts.push(DB.prepare('UPDATE pos_products SET stock = COALESCE(stock, 0) - ? WHERE id = ?').bind(s.qty, pid));
+      stmts.push(stockMoveStmt({ store_id: store.id, product_id: pid, name: s.name, change: -s.qty, reason: 'sale', note: row.receipt_no, sale_id: id, who: actor.who, at }));
+    }
+    if (customer) {
+      stmts.push(DB.prepare('UPDATE pos_customers SET visits = COALESCE(visits, 0) + 1, spent = COALESCE(spent, 0) + ?, last_visit_at = ?, last_store_id = ?, updated_at = ? WHERE id = ?')
+        .bind(pay.paid, at, store.id, at, customer.id));
+      if (earned || pay.cashbackUsed) stmts.push(walletStmt(customer.id, brand, earned - pay.cashbackUsed, earned, pay.cashbackUsed, at));
+    }
+    await DB.batch(stmts); // all or nothing
+  } catch (e) {
+    if (ex) await DB.prepare("UPDATE pos_sales SET status = 'open' WHERE id = ? AND status = 'paying'").bind(id).run();
+    else { const again = await getRow('pos_sales', id); if (again && again.status !== 'open') return again; } // the same sale arrived twice at once
+    throw e;
+  }
+  return getRow('pos_sales', id);
+}
+
+// Open orders (parked bills): saved now, paid later — e.g. a table that orders more as they go.
+async function posSaveOpen(actor, input) {
+  const id = posId(input.id);
+  const ex = await getRow('pos_sales', id);
+  if (ex && ex.status !== 'open') fail(ex.status === 'cancelled' ? 'This order was cancelled.' : 'This order was already paid.');
+  const store = await posStore(actor, ex ? ex.store_id : input.store_id);
+  const st = store.settings;
+  const orderType = st.orderTypes.includes(input.order_type) ? input.order_type : st.orderTypes[0];
+  const discount = posCleanDiscount(input.discount);
+  const priced = POS.priceCart({ items: posCleanItems(input.items), discount, order_type: orderType }, st);
+  const customer = input.customer_id ? await getRow('pos_customers', String(input.customer_id)) : null;
+  const at = nowIso();
+  const local = POS.localParts(at, posTz());
+  const items = saleLines(priced);
+  let kitchen = ex ? ex.kitchen : null;
+  if (st.kitchen && input.send !== false) { // new lines go to the kitchen
+    let fresh = false;
+    items.forEach((l) => { if (!l.sent_at) { l.sent_at = at; fresh = true; } });
+    if (fresh) kitchen = 'new';
+  }
+  const row = {
+    id, store_id: store.id, shift_id: null, status: 'open', receipt_no: null, order_no: (ex && ex.order_no) || await posNextOrderNo(store, local.date),
+    order_type: orderType, table_no: posText(input.table_no, 20) || null, note: posText(input.note, 300) || null,
+    customer_id: customer ? customer.id : null, customer_name: customer ? customer.name : null, customer_phone: customer ? customer.phone : null,
+    items, subtotal: priced.subtotal, discount: priced.discount, discount_info: discount, service: priced.service, tax: priced.tax, tax_included: priced.tax_included,
+    rounding: 0, total: priced.total, payments: [], change_due: 0, cashback_earned: 0, cashback_used: 0, refunds: [], refunded: 0, kitchen,
+    cashier: ex ? ex.cashier : actor.who, cashier_id: ex ? ex.cashier_id : actor.id, local_date: local.date, local_hour: local.hour,
+    paid_at: null, offline_at: null, created_at: ex ? ex.created_at : at, updated_at: at,
+  };
+  if (ex) {
+    const r = await saleUpdateStmt(row, 'open').run();
+    if (!r.meta.changes) fail('This order was just paid or changed on another device.');
+  } else await insertStmt('pos_sales', row).run();
+  return getRow('pos_sales', id);
+}
+
+async function posCancelOpen(actor, id, reason) {
+  const o = await getRow('pos_sales', String(id || ''));
+  if (!o || !canStore(actor, o.store_id)) fail('That order no longer exists.');
+  if (o.status !== 'open') fail('Only open orders can be cancelled — use Refund for paid sales.');
+  const note = [o.note, `Cancelled by ${actor.who}${reason ? ': ' + posText(reason, 200) : ''}`].filter(Boolean).join(' · ');
+  return updateRow('pos_sales', o.id, { status: 'cancelled', kitchen: null, note });
+}
+
+// Kitchen display: tickets still being made or waiting to be collected (last 24 hours).
+async function posKitchen(actor, storeId) {
+  const s = await posStore(actor, storeId, { active: false });
+  return readTable('pos_sales', "WHERE store_id = ? AND kitchen IN ('new', 'ready') AND status IN ('open', 'paying', 'paid', 'partially_refunded') AND created_at > ?",
+    s.id, new Date(Date.now() - 86400e3).toISOString());
+}
+async function posKitchenSet(actor, id, status) {
+  const o = await getRow('pos_sales', String(id || ''));
+  if (!o || !canStore(actor, o.store_id)) fail('That order no longer exists.');
+  if (!['new', 'ready', 'done'].includes(status)) fail('Unknown kitchen status.');
+  await DB.prepare('UPDATE pos_sales SET kitchen = ? WHERE id = ?').bind(status, o.id).run();
+  return { ...o, kitchen: status };
+}
+
+async function posSales(actor, req) {
+  const ymd = /^\d{4}-\d{2}-\d{2}$/;
+  const from = ymd.test(req.from) ? req.from : POS.localParts(new Date(), posTz()).date;
+  const to = ymd.test(req.to) ? req.to : from;
+  const where = ['local_date BETWEEN ? AND ?'], binds = [from, to];
+  if (req.storeId) { where.push('store_id = ?'); binds.push((await posStore(actor, req.storeId, { active: false })).id); }
+  else if (actor.stores) { where.push(`store_id IN (${actor.stores.map(() => '?').join(', ')})`); binds.push(...actor.stores); }
+  const statuses = { sold: SOLD, open: "('open')", cancelled: "('cancelled')", refunds: "('partially_refunded', 'refunded')" };
+  where.push(`status IN ${statuses[req.status] || SOLD}`);
+  const q = posText(req.q, 60);
+  if (q) {
+    const digits = q.replace(/\D/g, '');
+    where.push('(receipt_no LIKE ? OR lower(customer_name) LIKE ? OR (? <> \'\' AND customer_phone LIKE ?) OR order_no = ?)');
+    binds.push('%' + q.toUpperCase() + '%', '%' + q.toLowerCase() + '%', digits, '%' + digits.replace(/^0/, '') + '%', Number(digits) || -1);
+  }
+  const res = await DB.prepare(`SELECT * FROM pos_sales WHERE ${where.join(' AND ')} ORDER BY created_at DESC LIMIT 500`).bind(...binds).all();
+  return res.results.map((r) => rowOut('pos_sales', r));
+}
+async function posSaleFor(actor, id) {
+  const o = await getRow('pos_sales', String(id || ''));
+  if (!o || !canStore(actor, o.store_id)) fail('That sale no longer exists.');
+  return o;
+}
+
+// A cashier's refund needs a manager there: their name + 6-digit passcode, checked here.
+async function posApprover(ap, storeId) {
+  if (!ap || !ap.name || !ap.passcode) fail('A manager needs to approve this refund with their name and passcode.', 'NEED_MANAGER');
+  const ln = loginName(ap.name);
+  const g = await guard('pc:' + ln, 5);
+  const r = ln ? await DB.prepare('SELECT * FROM print_staff WHERE login_name = ?').bind(ln).first() : null;
+  const st = r && rowOut('print_staff', r);
+  const good = st && st.pass_hash && /^\d{6}$/.test(String(ap.passcode)) && sameText(await hashPassword(ap.passcode, st.pass_salt), st.pass_hash);
+  if (!good) { await g.count(); fail("That manager name and passcode don't match.", 'NEED_MANAGER'); }
+  await g.clear();
+  if (!st.is_active || st.status !== 'approved' || st.pos_role !== 'manager' || (st.pos_stores && st.pos_stores.length && !st.pos_stores.includes(storeId))) {
+    fail(`${st.name} isn't a manager at this store.`, 'NEED_MANAGER');
+  }
+  return st.name;
+}
+
+// Refund some or all of a sale: picks [{ index, qty }] of its lines. Money goes back by `method`.
+async function posRefund(actor, req) {
+  const sale = await getRow('pos_sales', String(req.id || ''));
+  if (!sale || !canStore(actor, sale.store_id)) fail('That sale no longer exists.');
+  if (!['paid', 'partially_refunded'].includes(sale.status)) fail(sale.status === 'refunded' ? 'This sale was already refunded in full.' : 'Only paid sales can be refunded.');
+  const reason = posText(req.reason, 200);
+  if (!reason) fail('Add a reason for the refund.');
+  const approvedBy = isManager(actor) ? null : await posApprover(req.approver, sale.store_id);
+  const store = await posStore(actor, sale.store_id, { active: false });
+  const st = store.settings;
+  const shift = await posOpenShiftRow(store.id);
+  if (!shift) fail('Open a shift first — refunds are paid out of the drawer.', 'NO_SHIFT');
+  const method = String(req.method || '');
+  if (method === POS.CASHBACK ? !sale.customer_id : !st.methods.includes(method)) fail('Choose how the money goes back to the customer.');
+  let q;
+  try { q = POS.refundQuote(sale, req.lines, { method, settings: st }); } catch (e) { fail(e.message); }
+  const at = nowIso();
+  const local = POS.localParts(at, posTz());
+  // Cashback the customer earned on this sale is taken back in proportion.
+  const paid = sale.total + (sale.rounding || 0);
+  const reversedSoFar = (sale.refunds || []).reduce((t, r) => t + (r.cashback_reversed || 0), 0);
+  const left = (sale.cashback_earned || 0) - reversedSoFar;
+  const reverse = !left ? 0 : q.full ? left : Math.min(left, Math.round(((sale.cashback_earned || 0) * q.amount) / (paid || 1)));
+  const items = (sale.items || []).map((it, i) => {
+    const ls = q.lines.filter((l) => l.index === i);
+    return ls.length ? { ...it, refunded_qty: (it.refunded_qty || 0) + ls.reduce((t, l) => t + l.qty, 0), refunded_net: (it.refunded_net || 0) + ls.reduce((t, l) => t + l.net, 0) } : it;
+  });
+  const record = { id: uuid(), at, by: actor.who, approved_by: approvedBy, method, amount: q.amount, net: q.net, service: q.service, tax: q.tax,
+    lines: q.lines, reason, restock: !!req.restock, cashback_reversed: reverse };
+  // Claim the sale first (by its last-changed time) so two refunds can't go through at once.
+  const claim = await DB.prepare('UPDATE pos_sales SET updated_at = ? WHERE id = ? AND updated_at = ?').bind(at, sale.id, sale.updated_at).run();
+  if (!claim.meta.changes) fail('This sale was just changed on another device — open it again.');
+  const stmts = [DB.prepare('UPDATE pos_sales SET items = ?, refunds = ?, refunded = ?, status = ? WHERE id = ?')
+    .bind(JSON.stringify(items), JSON.stringify([...(sale.refunds || []), record]), (sale.refunded || 0) + q.amount, q.full ? 'refunded' : 'partially_refunded', sale.id)];
+  const info = await posProductInfo(store.id, q.lines);
+  const base = { sale_id: sale.id, store_id: store.id, shift_id: shift.id, cashier: actor.who, local_date: local.date, created_at: at };
+  for (const l of q.lines) {
+    const pi = info.get(l.product_id);
+    stmts.push(insertStmt('pos_lines', { ...base, id: uuid(), kind: 'refund', product_id: l.product_id, name: l.name, category: pi ? pi.category : null,
+      qty: -l.qty, net: -l.net, cost: pi ? -pi.cost * l.qty : 0, local_hour: local.hour }));
+  }
+  if (q.amount) stmts.push(insertStmt('pos_payments', { ...base, id: uuid(), kind: 'refund', method, amount: -q.amount }));
+  if (req.restock) {
+    for (const l of q.lines) {
+      if (!info.get(l.product_id)?.track) continue;
+      stmts.push(DB.prepare('UPDATE pos_products SET stock = COALESCE(stock, 0) + ? WHERE id = ?').bind(l.qty, l.product_id));
+      stmts.push(stockMoveStmt({ store_id: store.id, product_id: l.product_id, name: l.name, change: l.qty, reason: 'refund', note: sale.receipt_no, sale_id: sale.id, who: actor.who, at }));
+    }
+  }
+  if (sale.customer_id) {
+    stmts.push(DB.prepare('UPDATE pos_customers SET spent = MAX(0, COALESCE(spent, 0) - ?), updated_at = ? WHERE id = ?').bind(q.amount, at, sale.customer_id));
+    const back = method === POS.CASHBACK ? q.amount : 0;
+    if (back || reverse) stmts.push(walletStmt(sale.customer_id, POS.brandKey(store), back - reverse, -reverse, -back, at));
+  }
+  await DB.batch(stmts);
+  return getRow('pos_sales', sale.id);
+}
+
+// ── Shifts: opening float → pay in / pay out → count the drawer at close ──
+async function posShiftTotals(sh, counted = null) {
+  const [pays, sales, lines, refunds] = (await DB.batch([
+    DB.prepare('SELECT method, kind, SUM(amount) AS amount, COUNT(DISTINCT sale_id) AS count FROM pos_payments WHERE shift_id = ? GROUP BY method, kind').bind(sh.id),
+    DB.prepare(`SELECT COUNT(*) AS count, SUM(discount) AS discount, SUM(service) AS service, SUM(tax) AS tax, SUM(rounding) AS rounding FROM pos_sales WHERE shift_id = ? AND status IN ${SOLD}`).bind(sh.id),
+    DB.prepare("SELECT SUM(net) AS net, SUM(CASE WHEN kind = 'sale' THEN qty ELSE 0 END) AS items FROM pos_lines WHERE shift_id = ?").bind(sh.id),
+    DB.prepare("SELECT COUNT(DISTINCT sale_id) AS n FROM pos_payments WHERE shift_id = ? AND kind = 'refund'").bind(sh.id),
+  ])).map((r) => r.results);
+  const s = sales[0] || {}, l = lines[0] || {};
+  return POS.shiftTotals({
+    float: Number(sh.opening_float) || 0, moves: sh.moves || [], counted,
+    pays: pays.map((p) => ({ method: p.method, kind: p.kind, amount: Number(p.amount) || 0, count: Number(p.count) || 0 })),
+    sales: { count: Number(s.count) || 0, discount: Number(s.discount) || 0, service: Number(s.service) || 0, tax: Number(s.tax) || 0,
+      rounding: Number(s.rounding) || 0, net: Number(l.net) || 0, items: Number(l.items) || 0, refundCount: Number(refunds[0]?.n) || 0 },
+  });
+}
+async function posShiftFor(actor, id, { open = false } = {}) {
+  const sh = await getRow('pos_shifts', String(id || ''));
+  if (!sh || !canStore(actor, sh.store_id)) fail('That shift no longer exists.');
+  if (open && sh.status !== 'open') fail('That shift is already closed.');
+  return sh;
+}
+async function posShift(actor, storeId) {
+  const s = await posStore(actor, storeId, { active: false });
+  const sh = await posOpenShiftRow(s.id);
+  return sh ? { ...sh, totals: await posShiftTotals(sh) } : null;
+}
+async function posOpenShift(actor, storeId, float) {
+  const s = await posStore(actor, storeId);
+  const f = posMoney(float, 'opening cash') || 0;
+  const open = await posOpenShiftRow(s.id);
+  if (open) fail(`A shift is already open at ${s.name} (opened by ${open.opened_by}).`);
+  const at = nowIso();
+  try {
+    await insertRow('pos_shifts', { store_id: s.id, status: 'open', opened_by: actor.who, opened_at: at, opening_float: f, moves: [] });
+  } catch (e) {
+    if (/UNIQUE/i.test(String(e && e.message))) fail(`A shift was just opened at ${s.name} on another device.`);
+    throw e;
+  }
+  return posShift(actor, s.id);
+}
+async function posCashMove(actor, shiftId, move) {
+  const sh = await posShiftFor(actor, shiftId, { open: true });
+  const type = move.type === 'out' ? 'out' : move.type === 'in' ? 'in' : null;
+  if (!type) fail('Choose pay in or pay out.');
+  const amount = posMoney(move.amount);
+  if (!amount) fail('Enter the amount.');
+  const reason = posText(move.reason, 80);
+  if (!reason) fail('Choose a reason.');
+  const moves = [...(sh.moves || []), { id: uuid().slice(0, 8), type, amount, reason, note: posText(move.note, 200) || null, by: actor.who, at: nowIso() }];
+  if (moves.length > 300) fail('This shift has too many pay ins / pay outs.');
+  await updateRow('pos_shifts', sh.id, { moves });
+  return posShift(actor, sh.store_id);
+}
+async function posCloseShift(actor, shiftId, counted, note) {
+  const sh = await posShiftFor(actor, shiftId, { open: true });
+  const c = posMoney(counted, 'cash counted');
+  if (c == null) fail('Count the cash in the drawer and enter the total.');
+  const totals = await posShiftTotals(sh, c);
+  const r = await DB.prepare("UPDATE pos_shifts SET status = 'closed', closed_by = ?, closed_at = ?, counted = ?, summary = ?, note = ?, updated_at = ? WHERE id = ? AND status = 'open'")
+    .bind(actor.who, nowIso(), c, JSON.stringify(totals), posText(note, 300) || null, nowIso(), sh.id).run();
+  if (!r.meta.changes) fail('That shift is already closed.');
+  return getRow('pos_shifts', sh.id);
+}
+async function posShifts(actor, storeId) {
+  const s = await posStore(actor, storeId, { active: false });
+  const res = await DB.prepare('SELECT * FROM pos_shifts WHERE store_id = ? ORDER BY opened_at DESC LIMIT 60').bind(s.id).all();
+  return res.results.map((r) => rowOut('pos_shifts', r));
+}
+async function posShiftReport(actor, id) {
+  const sh = await posShiftFor(actor, id);
+  return sh.status === 'open' ? { ...sh, totals: await posShiftTotals(sh) } : { ...sh, totals: sh.summary };
+}
+
+// ── Customers & cashback ──
+async function posWallets(ids, brand) {
+  const out = new Map();
+  if (!ids.length) return out;
+  await inGroups(ids, async (g, q) => {
+    const rows = (await DB.prepare(`SELECT customer_id, brand, balance FROM pos_wallets WHERE customer_id IN (${q})${brand ? ' AND brand = ?' : ''}`)
+      .bind(...g, ...(brand ? [brand] : [])).all()).results;
+    for (const w of rows) { const list = out.get(w.customer_id) || []; list.push({ brand: w.brand, balance: Number(w.balance) || 0 }); out.set(w.customer_id, list); }
+  });
+  return out;
+}
+const withCashback = (c, wallets, brand) => ({ ...c, cashback: brand ? ((wallets.get(c.id) || []).find((w) => w.brand === brand)?.balance || 0) : null,
+  wallets: wallets.get(c.id) || [] });
+
+async function posFindCustomers(actor, q, storeId) {
+  const store = storeId ? await posStore(actor, storeId, { active: false }) : null;
+  q = posText(q, 60);
+  if (q.length < 2) return [];
+  const digits = q.replace(/\D/g, '');
+  const res = digits.length >= 3 && !/[a-z]/i.test(q)
+    ? await DB.prepare('SELECT * FROM pos_customers WHERE phone LIKE ? ORDER BY last_visit_at DESC LIMIT 20').bind('%' + digits.replace(/^0/, '') + '%').all()
+    : await DB.prepare('SELECT * FROM pos_customers WHERE lower(name) LIKE ? ORDER BY last_visit_at DESC LIMIT 20').bind('%' + q.toLowerCase() + '%').all();
+  const rows = res.results.map((r) => rowOut('pos_customers', r));
+  const brand = store ? POS.brandKey(store) : null;
+  const wallets = await posWallets(rows.map((r) => r.id), brand);
+  return rows.map((c) => withCashback(c, wallets, brand));
+}
+async function posCustomer(actor, id, storeId) {
+  const c = await getRow('pos_customers', String(id || ''));
+  if (!c) fail('That customer no longer exists.');
+  const store = storeId ? await posStore(actor, storeId, { active: false }) : null;
+  const brand = store ? POS.brandKey(store) : null;
+  const wallets = await posWallets([c.id], null);
+  const where = actor.stores ? ` AND store_id IN (${actor.stores.map(() => '?').join(', ')})` : '';
+  const sales = (await DB.prepare(`SELECT * FROM pos_sales WHERE customer_id = ? AND status IN ${SOLD}${where} ORDER BY created_at DESC LIMIT 30`)
+    .bind(c.id, ...(actor.stores || [])).all()).results.map((r) => rowOut('pos_sales', r));
+  return { ...withCashback(c, wallets, brand), sales };
+}
+async function posSaveCustomer(input) {
+  const phone = POS.normPhone(input.phone, posCountry());
+  if (phone.length < 8 || phone.length > 15) fail('Enter the customer\'s phone number (e.g. 012-345 6789).');
+  const email = posText(input.email, 120).toLowerCase() || null;
+  if (email && !/^\S+@\S+\.\S+$/.test(email)) fail('That email doesn\'t look right.');
+  const birthday = posText(input.birthday, 10) || null;
+  if (birthday && !/^\d{4}-\d{2}-\d{2}$/.test(birthday)) fail('Pick the birthday from the calendar.');
+  const p = { phone, name: posText(input.name, 60) || null, email, birthday, notes: posText(input.notes, 500) || null };
+  const other = await DB.prepare('SELECT id, name FROM pos_customers WHERE phone = ? AND id <> ?').bind(phone, String(input.id || '')).first();
+  if (other) fail(`That phone number already belongs to ${other.name || 'another customer'}.`, 'EXISTS');
+  if (input.id) {
+    if (!(await getRow('pos_customers', String(input.id)))) fail('That customer no longer exists.');
+    return updateRow('pos_customers', String(input.id), p);
+  }
+  return insertRow('pos_customers', p);
+}
+// Everyone (for the customer list and the marketing export), with every brand's cashback.
+async function posCustomers() {
+  const rows = (await DB.prepare('SELECT * FROM pos_customers ORDER BY last_visit_at DESC LIMIT 5000').all()).results.map((r) => rowOut('pos_customers', r));
+  const wallets = new Map();
+  for (const w of (await DB.prepare('SELECT customer_id, brand, balance FROM pos_wallets WHERE balance > 0').all()).results) {
+    const list = wallets.get(w.customer_id) || [];
+    list.push({ brand: w.brand, balance: Number(w.balance) || 0 });
+    wallets.set(w.customer_id, list);
+  }
+  return rows.map((c) => ({ ...c, wallets: wallets.get(c.id) || [] }));
+}
+
+// ── Stock ──
+async function posStockAdjust(actor, req) {
+  const pr = await getRow('pos_products', String(req.productId || ''));
+  if (!pr) fail('That product no longer exists.');
+  const store = await posStore(actor, pr.store_id, { active: false });
+  const mode = ['add', 'remove', 'set'].includes(req.mode) ? req.mode : null;
+  if (!mode) fail('Choose what happened to the stock.');
+  const qty = Math.round(Number(req.qty));
+  if (!Number.isFinite(qty) || qty < 0 || qty > 1e6 || (mode !== 'set' && !qty)) fail('Enter how many.');
+  const reason = Object.keys(POS.STOCK_REASONS).includes(req.reason) && !['sale', 'refund'].includes(req.reason) ? req.reason
+    : { add: 'received', remove: 'wastage', set: 'count' }[mode];
+  const change = mode === 'set' ? qty - (Number(pr.stock) || 0) : mode === 'add' ? qty : -qty;
+  const at = nowIso();
+  await DB.batch([
+    mode === 'set' ? DB.prepare('UPDATE pos_products SET stock = ?, track_stock = 1, updated_at = ? WHERE id = ?').bind(qty, at, pr.id)
+      : DB.prepare('UPDATE pos_products SET stock = COALESCE(stock, 0) + ?, track_stock = 1, updated_at = ? WHERE id = ?').bind(change, at, pr.id),
+    stockMoveStmt({ store_id: store.id, product_id: pr.id, name: pr.name, change, reason, note: posText(req.note, 200), who: actor.who, at }),
+  ]);
+  return getRow('pos_products', pr.id);
+}
+async function posStockMoves(actor, storeId, productId) {
+  const s = await posStore(actor, storeId, { active: false });
+  const res = productId
+    ? await DB.prepare('SELECT * FROM pos_stock_moves WHERE store_id = ? AND product_id = ? ORDER BY created_at DESC LIMIT 200').bind(s.id, String(productId)).all()
+    : await DB.prepare('SELECT * FROM pos_stock_moves WHERE store_id = ? ORDER BY created_at DESC LIMIT 200').bind(s.id).all();
+  return res.results.map((r) => rowOut('pos_stock_moves', r));
+}
+
+// ── Reports: summed by the database (fast, and within the free plan's limits), shaped by POS.buildReport ──
+async function posReport(actor, storeId, from, to) {
+  const ymd = /^\d{4}-\d{2}-\d{2}$/;
+  if (!ymd.test(from) || !ymd.test(to) || from > to) fail('Pick the dates for the report.');
+  if ((new Date(to) - new Date(from)) / 86400e3 > 400) fail('Pick a range of up to about a year.');
+  let ids = actor.stores;
+  if (storeId) ids = [(await posStore(actor, storeId, { active: false })).id];
+  const W = 'local_date BETWEEN ? AND ?' + (ids ? ` AND store_id IN (${ids.map(() => '?').join(', ')})` : '');
+  const q = (sql) => DB.prepare(sql).bind(from, to, ...(ids || []));
+  const [sales, lines, days, daySales, hours, hourSales, methods, products, categories, stores, storeSales, cashiers] = (await DB.batch([
+    q(`SELECT COUNT(*) AS count, SUM(subtotal) AS gross, SUM(discount) AS discount, SUM(service) AS service, SUM(tax) AS tax, SUM(rounding) AS rounding,
+       SUM(total + rounding) AS paid, SUM(cashback_earned) AS cb_earned, SUM(cashback_used) AS cb_used FROM pos_sales WHERE status IN ${SOLD} AND ${W}`),
+    q(`SELECT SUM(net) AS net, SUM(CASE WHEN kind = 'sale' THEN qty ELSE 0 END) AS items, SUM(CASE WHEN kind = 'refund' THEN -net ELSE 0 END) AS refunded_net,
+       SUM(cost) AS cost FROM pos_lines WHERE ${W}`),
+    q(`SELECT local_date AS date, SUM(net) AS net FROM pos_lines WHERE ${W} GROUP BY local_date`),
+    q(`SELECT local_date AS date, COUNT(*) AS sales FROM pos_sales WHERE status IN ${SOLD} AND ${W} GROUP BY local_date`),
+    q(`SELECT local_hour AS hour, SUM(net) AS net FROM pos_lines WHERE ${W} GROUP BY local_hour`),
+    q(`SELECT local_hour AS hour, COUNT(*) AS sales FROM pos_sales WHERE status IN ${SOLD} AND ${W} GROUP BY local_hour`),
+    q(`SELECT method, SUM(CASE WHEN kind = 'sale' THEN amount ELSE 0 END) AS sales, SUM(CASE WHEN kind = 'refund' THEN -amount ELSE 0 END) AS refunds,
+       COUNT(DISTINCT CASE WHEN kind = 'sale' THEN sale_id END) AS count FROM pos_payments WHERE ${W} GROUP BY method`),
+    q(`SELECT MAX(name) AS name, product_id, SUM(qty) AS qty, SUM(net) AS net FROM pos_lines WHERE ${W} GROUP BY COALESCE(product_id, name) ORDER BY SUM(net) DESC LIMIT 100`),
+    q(`SELECT COALESCE(category, '') AS name, SUM(qty) AS qty, SUM(net) AS net FROM pos_lines WHERE ${W} GROUP BY COALESCE(category, '') ORDER BY SUM(net) DESC`),
+    q(`SELECT store_id, SUM(net) AS net FROM pos_lines WHERE ${W} GROUP BY store_id`),
+    q(`SELECT store_id, COUNT(*) AS sales FROM pos_sales WHERE status IN ${SOLD} AND ${W} GROUP BY store_id`),
+    q(`SELECT cashier AS name, COUNT(*) AS sales, SUM(total + rounding) AS paid FROM pos_sales WHERE status IN ${SOLD} AND ${W} GROUP BY cashier ORDER BY SUM(total + rounding) DESC`),
+  ])).map((r) => r.results);
+  const storeNames = Object.fromEntries((await readTable('pos_stores')).map((s) => [s.id, s.name]));
+  return POS.buildReport({ from, to, sales: sales[0], lines: lines[0], days, daySales, hours, hourSales, methods, products, categories, stores, storeSales, cashiers, storeNames });
 }

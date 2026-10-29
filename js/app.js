@@ -137,6 +137,7 @@ function Shell() {
         <div class="nav-divider"></div>
         <span class="nav-label">Hubs</span>
         <a class="nav-item" href="print/index.html"><${Icon} name="printer" /><span>Print Hub</span><span class="nav-ext"><${Icon} name="external" size=${14} /></span></a>
+        <a class="nav-item" href="pos/index.html"><${Icon} name="store" /><span>${CONFIG.POS_NAME || 'GIG POS'}</span><span class="nav-ext"><${Icon} name="external" size=${14} /></span></a>
         <a href=${hrefFor('socmed')} class=${'nav-item' + (p0 === 'socmed' ? ' active' : '')} aria-current=${p0 === 'socmed' ? 'page' : undefined}>
           <${Icon} name="megaphone" /><span>Socmed Hub</span></a>
       </nav>
@@ -168,6 +169,7 @@ async function signInFromLink() {
   if (!api.auth.signInWithLink) { linkError = 'Team links for the Creative Hub need the Cloudflare setup.'; return; }
   try { await api.auth.signInWithLink(m[1]); } catch (e) {
     if (e.code === 'PRINT_ONLY') return location.replace('print/index.html#k=' + m[1]); // it's a Print Hub link
+    if (e.code === 'POS_ONLY') return location.replace('pos/index.html#k=' + m[1]); // a cashier's POS link
     linkError = "That link doesn't work any more. Sign in below with your name and passcode — new to the team? Ask the owner for the join link.";
   }
 }
@@ -179,6 +181,7 @@ function App() {
     let lastKey, stop = () => {}, alive = true;
     const evaluate = async (user) => {
       if (!user) return setPhase({ id: 'signedOut' });
+      if (user.viaLink && user.posOnly) return location.replace('pos/index.html'); // POS only (a cashier)
       if (user.viaLink && user.hub === false) return location.replace('print/index.html'); // Print Hub only
       setPhase({ id: 'loading' });
       try {

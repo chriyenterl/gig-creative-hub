@@ -11,6 +11,9 @@ export const CONFIG = {
   // Name shown on the print ordering pages (customer form + staff app).
   PRINT_NAME: 'GIG Print Hub',
 
+  // Name of the till for the shops and cafés (pos/index.html).
+  POS_NAME: 'GIG POS',
+
   // Country code added to local phone numbers (e.g. 012-345 6789 → +60 12-345 6789) for WhatsApp links.
   WHATSAPP_COUNTRY_CODE: '60',
 

@@ -2,6 +2,7 @@
 // browser (localStorage for data, IndexedDB for uploaded files). Used when
 // config.js has no Supabase details, so you can click around before setting up.
 import { uid, newToken, today, fmtGB } from './util.js';
+import { createDemoPos } from './pos/demo.js';
 import { DEFAULT_QUESTIONS, DEFAULT_READY_MESSAGE, DEFAULT_NEW_MESSAGE, notifyPayload, isVisible, isBlank, normalizeLink,
   finishingFor, makeSteps, applyStep, stepsForStatus } from './print/model.js';
 
@@ -527,6 +528,7 @@ export function createDemoBackend() {
     },
 
     socmed: demoSocmed(),
+    pos: createDemoPos(),
 
     print: (() => {
       let pdb = null;
@@ -776,9 +778,9 @@ export function createDemoBackend() {
           psave();
           return staffOut();
         },
-        async staffApprove(key, id, hub) {
+        async staffApprove(key, id, hub, pos) {
           needMaster(key);
-          Object.assign(staffFind(id), { status: 'approved', hub: !!hub, active: true });
+          Object.assign(staffFind(id), pos ? { status: 'approved', hub: false, active: true, posOnly: true, pos: 'cashier' } : { status: 'approved', hub: !!hub, active: true });
           psave();
           return staffOut();
         },

@@ -25,6 +25,7 @@ run push.test.mjs
 run previews.test.mjs
 run steps.test.mjs
 run email.test.mjs --var "RESEND_API_URL:http://127.0.0.1:9912/emails" --var "RESEND_API_KEY:test-key" --var "MAIL_FROM:GIG <noreply@example.test>"
+run pos.test.mjs
 run socmed.test.mjs --var "BUFFER_API_URL:http://127.0.0.1:9913/" --var "BUFFER_REFRESH_MINUTES:0.03"
 rm -rf .wrangler/test-state
 exit $STATUS

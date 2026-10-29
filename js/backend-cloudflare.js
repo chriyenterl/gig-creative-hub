@@ -47,7 +47,8 @@ export function createCloudflareBackend(cfg, { portal = false } = {}) {
       // A plain-text body keeps this a "simple" request (no extra CORS round trip).
       res = await fetch(base + '/api', { method: 'POST', body: JSON.stringify({ action, token, ...args }) });
     } catch {
-      throw new Error("Can't reach the GIG server. Check your internet connection and the CLOUDFLARE_API_URL in config.js.");
+      // offline: the POS keeps sales on the device and sends them when the connection is back
+      throw Object.assign(new Error("Can't reach the GIG server. Check your internet connection and the CLOUDFLARE_API_URL in config.js."), { offline: true });
     }
     let j;
     try { j = JSON.parse(await res.text()); } catch {
@@ -116,8 +117,8 @@ export function createCloudflareBackend(cfg, { portal = false } = {}) {
         token = r.token; saveToken(token); user = r.user; emit();
       },
       // A team member's personal sign-in link (Creative Hub access) signs them in without their passcode.
-      async signInWithLink(linkKey) {
-        const r = await call('linkLogin', { linkKey });
+      async signInWithLink(linkKey, app) {
+        const r = await call('linkLogin', { linkKey, app });
         token = r.token; saveToken(token); user = r.user; emit();
         return r;
       },
@@ -217,7 +218,7 @@ export function createCloudflareBackend(cfg, { portal = false } = {}) {
       staffUpdate(printKey, id, patch) { return call('printStaffUpdate', { printKey, id, patch }); },
       staffRegenerate(printKey, id) { return call('printStaffRegenerate', { printKey, id }); },
       staffDelete(printKey, id) { return call('printStaffDelete', { printKey, id }); },
-      staffApprove(printKey, id, hub) { return call('printStaffApprove', { printKey, id, hub }); },
+      staffApprove(printKey, id, hub, pos) { return call('printStaffApprove', { printKey, id, hub, pos }); },
       staffResetPasscode(printKey, id) { return call('printStaffResetPasscode', { printKey, id }); },
       // Push notifications: new-order alerts on this device, even when the app is closed.
       pushSubscribe(printKey, subscription, device) { return call('printPushSubscribe', { printKey, subscription, device }); },
@@ -229,6 +230,41 @@ export function createCloudflareBackend(cfg, { portal = false } = {}) {
         const url = fileUrl(key);
         return { thumb: url, open: url, download: url + '?dl=1', preview: url };
       },
+    },
+
+    // ── GIG POS (money in sen) ───────────────────────────────────────────
+    pos: {
+      me() { return call('posMe'); },
+      saveStore(store) { return call('posSaveStore', { store }); },
+      team() { return call('posTeam'); },
+      teamSet(id, patch) { return call('posTeamSet', { id, patch }); },
+      catalog(storeId) { return call('posCatalog', { storeId }); },
+      saveItem(kind, row) { return call('posSaveItem', { kind, row }); },
+      deleteItem(kind, id) { return call('posDeleteItem', { kind, id }); },
+      importProducts(storeId, rows) { return call('posImport', { storeId, rows }); },
+      copyMenu(fromId, toId) { return call('posCopyMenu', { fromId, toId }); },
+      checkout(sale) { return call('posCheckout', { sale }); },
+      saveOpen(order) { return call('posSaveOpen', { order }); },
+      openOrders(storeId) { return call('posOpenOrders', { storeId }); },
+      cancelOpen(id, reason) { return call('posCancelOpen', { id, reason }); },
+      kitchen(storeId) { return call('posKitchen', { storeId }); },
+      kitchenSet(id, status) { return call('posKitchenSet', { id, status }); },
+      sales(q) { return call('posSales', q); },
+      sale(id) { return call('posSale', { id }); },
+      refund(r) { return call('posRefund', r); },
+      shift(storeId) { return call('posShift', { storeId }); },
+      openShift(storeId, float) { return call('posOpenShift', { storeId, float }); },
+      cashMove(shiftId, move) { return call('posCashMove', { shiftId, move }); },
+      closeShift(shiftId, counted, note) { return call('posCloseShift', { shiftId, counted, note }); },
+      shifts(storeId) { return call('posShifts', { storeId }); },
+      shiftReport(id) { return call('posShiftReport', { id }); },
+      findCustomers(q, storeId) { return call('posFindCustomers', { q, storeId }); },
+      customer(id, storeId) { return call('posCustomer', { id, storeId }); },
+      saveCustomer(customer) { return call('posSaveCustomer', { customer }); },
+      customers() { return call('posCustomers'); },
+      stockAdjust(r) { return call('posStockAdjust', r); },
+      stockMoves(storeId, productId) { return call('posStockMoves', { storeId, productId }); },
+      report(storeId, from, to) { return call('posReport', { storeId, from, to }); },
     },
 
     portal: {

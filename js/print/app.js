@@ -896,6 +896,7 @@ function App() {
         setPhase({ id: 'ready' });
         if (alertsOn()) syncPush(true); // re-register this device so alerts keep arriving with the app closed
       } catch (e) {
+        if (e.code === 'POS_ONLY') return location.replace('../pos/index.html' + (getKey() ? '#k=' + getKey() : ''));
         setPhase({ id: 'denied', message: e.message });
       }
     })();

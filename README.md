@@ -12,6 +12,7 @@ One central place for your marketing media — instead of juggling Google Sheets
 | **Upload links** | Give each creator their **own private link**. They see only an upload page — nothing else. You can **disable**, **change** (new address, old one stops working), set an **expiry**, or **delete** each link at any time. |
 | **Print Hub** | A second app — **GIG Print Hub** (sidebar → **Print Hub**) for print orders. Customers fill in your order form through one shared link; staff see **New → Pending → Completed**, open any order for full details and artwork, add internal notes, and print a job sheet. Your bot is notified when a **new order** comes in and when an order is **completed**, so it can message the customer (e.g. “ready for pickup”). |
 | **Socmed Hub** | Sidebar → **Socmed Hub**: an overview of everything scheduled in **Buffer** — **by brand** and **by platform** (Instagram, Facebook, TikTok, YouTube, Threads…), what's coming up day by day, what failed, and what went out this week. Every channel has **Open in Buffer**. Posting and editing stay in Buffer (or your bot). |
+| **Webstore** | An online store customers order from (`shop/`, like a StoreHub webstore): menu by category, product options (box size, add-ons…), **self pickup or delivery** with a time slot, cart, checkout with **DuitNow QR / bank transfer / pay at pickup**, and a page to follow their order. The team runs it from the sidebar → **Webstore**: **Orders** (New → Preparing → Ready → Completed, one-tap WhatsApp messages, receipts, *Mark as paid*), **Products** and **Store settings**. |
 
 ---
 
@@ -286,6 +287,54 @@ everything in one place — nothing is posted or changed from the hub.
 - Buffer doesn't support Xiaohongshu or Lemon8, so posts for those don't appear here.
 - The Socmed Hub needs the Cloudflare setup (demo mode shows sample data).
 
+## Webstore (online ordering)
+
+An online store for your customers — like a StoreHub webstore — at the `shop/` address next to the Hub
+(e.g. `https://chriyenterl.github.io/gig-creative-hub/shop/`). No app or account needed: customers open the link, order, and
+get a page to follow their order. It's set up for **Noms** to start with; the name, logo, colour and menu are all yours to change.
+
+**Switch it on (once, owner):**
+1. Update the server: in the `cloudflare` folder run `npx wrangler deploy` (the new tables are made automatically).
+2. In the Creative Hub open **Webstore → Store settings**: store name, tagline, logo, cover photo, brand colour, WhatsApp number,
+   Instagram, opening hours, pickup and/or delivery (fee, free-delivery amount, minimum order), and how customers pay.
+3. **Webstore → Products** → **Add product** (photo, name, price, category, description, options), or **Add sample products** to
+   start from examples and edit them. Delete any samples you don't sell before sharing the link.
+4. **Webstore → Orders → Copy store link** and put it in your Instagram bio, WhatsApp Business profile and Linktree.
+
+**What customers see:** your cover photo, logo, *Open now / Closed* and store info (hours, address, WhatsApp, Instagram) ·
+**Self pickup / Delivery** and a time (only times inside your opening hours, with enough notice — *Earliest order* in settings) ·
+the menu by category with photos, labels (*Best seller*, *New*…), *Sold out*, search, and a share link per product ·
+options like *Box size* (must choose) or *Add-ons* (optional, each can add to the price), quantity and a note ·
+the cart, then checkout: name, phone (WhatsApp), delivery address, payment and a note ·
+an **order page** with the order number, live status (*Order received → Preparing → Ready for pickup / Out for delivery → Collected / Delivered*),
+payment details and a button to send the order to you on WhatsApp. Their recent orders are remembered on their phone (**My orders**).
+
+**Payment:** **DuitNow QR** (upload a screenshot of your QR) and/or **bank transfer** (bank, account name and number), and/or
+**pay at pickup / cash on delivery**. Customers attach a screenshot of their payment at checkout or later on their order page
+(turn on *Ask for the payment receipt at checkout* to make it required). Check it against your bank or e-wallet, then **Mark as paid**.
+There's no card / FPX payment gateway — that needs a payment provider account (e.g. Billplz, ToyyibPay, Stripe).
+
+**Running orders** (everyone with Creative Hub access — Store settings are owners only):
+- **Webstore → Orders**: *To do* lists open orders by pickup / delivery time (overdue ones in red). Each has its next step —
+  **Start preparing → Mark ready / Out for delivery → Collected / Delivered** — and the page refreshes itself every minute.
+- Open an order for the items (with options and notes), the customer's details, the payment receipt, internal notes and history.
+  The green **WhatsApp** buttons open WhatsApp with *order confirmed* or *ready for pickup / on its way* already typed
+  (edit the wording in Store settings; tags like `{name}`, `{order_no}`, `{total}`, `{when}`, `{link}` are filled in).
+- **Cancel order** shows *cancelled* on the customer's page. **Delete** removes an order and its receipt for good.
+- **Products**: the *In stock* switch marks something *Sold out* in one tap; **Hide from the store** keeps it for later
+  (e.g. seasonal items); the arrows change the order within a category. Category order is in Store settings → *Menu order*.
+- Turn off **Taking orders** (Store settings) to pause checkout — customers can still browse and see your message.
+- **New-order alerts:** phones and computers that turned on *New-order alerts* in the Print Hub also get a notification for each
+  webstore order (owners, and team members with Creative Hub access). Tapping it opens the order.
+
+**Good to know:**
+- Prices are always worked out by your server from the menu — a changed price or sold-out item in someone's cart is caught at checkout.
+- Times are Malaysia time (`Asia/Kuala_Lumpur`; change `SHOP_TZ` in `cloudflare/worker.js` and `TZ` in `js/shop/model.js` for elsewhere).
+- Product photos are made smaller (up to 1600 px) before upload so the store is quick on phones. Photos and receipts are stored in
+  the **shop/** folder of your file storage and count toward the storage limit.
+- To stop spam, one connection can place up to 20 orders in 15 minutes.
+- The webstore needs the Cloudflare setup (demo mode shows a sample store with sample orders).
+
 ## Good to know (Cloudflare version)
 
 - **Speed:** saves take a fraction of a second. Big videos upload in 10 MB pieces, and a piece that fails is retried
@@ -341,6 +390,10 @@ print/sw.js                 Lets new-order pop-ups work on Android phones
 manifest.json, print/manifest.json   Make both apps installable (home-screen icon, full-screen)
 icons/                      App icons
 js/print/*.js               Print Hub screens and rules
+shop/index.html             Webstore — the customer storefront (menu, cart, checkout, order page)
+js/shop/*.js                Webstore rules, storefront and demo-mode store
+js/views/shop*.js           Webstore pages in the Creative Hub (orders, products, store settings)
+css/shop.css                Webstore look (light + dark, uses the store's own colour)
 cloudflare/worker.js        The Cloudflare server (files in R2, data in D1)
 cloudflare/wrangler.toml    Its settings for the wrangler tool
 cloudflare/tests/           Server tests (run.sh — uses a local copy, never your real data)

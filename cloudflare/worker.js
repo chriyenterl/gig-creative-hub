@@ -3,8 +3,8 @@
  *  GIG Creative Hub — backend on Cloudflare
  *
  *  A Cloudflare Worker (this file) with:
- *    • D1  (binding "DB")    — all the data: talents, links, approvals, usage, print orders…
- *    • R2  (binding "FILES") — all the files: photos, videos, brand kit, creator uploads, print artwork
+ *    • D1  (binding "DB")    — all the data: talents, links, approvals, usage, print orders, webstore…
+ *    • R2  (binding "FILES") — all the files: photos, videos, brand kit, creator uploads, print artwork, product photos
  *
  *  It answers the same actions as google-apps-script/Code.gs, so the website works
  *  the same way. Tables are created automatically on the first request.
@@ -22,7 +22,7 @@
 const TOKEN_DAYS = 30;           // how long a team login lasts
 const PBKDF2_ROUNDS = 20000;     // password hashing strength (kept modest for the free plan's CPU limit)
 const CHUNK = 10 * 1024 * 1024;  // upload part size — big files are sent in pieces of this size
-const SCHEMA_V = '12';            // bump when SCHEMA changes so new columns get added
+const SCHEMA_V = '13';            // bump when SCHEMA changes so new columns get added
 const GB = 1e9;                  // storage is counted the way Cloudflare bills it (1 GB = 1,000,000,000 bytes)
 const DEFAULT_LIMIT_GB = 10;     // uploads stop here (R2's free allowance) — change it in Settings
 
@@ -53,6 +53,16 @@ const SCHEMA = {
                          'reset_hash', 'reset_exp', 'shared', 'requested_at', 'last_used_at', 'created_at'], bool: ['is_active', 'hub_access', 'shared'] },
   // Phones and computers that get a notification for every new order (even with the app closed).
   push_subs:    { cols: ['id', 'endpoint', 'p256dh', 'auth', 'who', 'device', 'access', 'ref', 'key_hash', 'created_at'] },
+  // Webstore: the menu customers order from (shop/index.html) and their orders.
+  // options = [{ id, name, min, max, choices: [{ id, name, price }] }] — e.g. "Box size", "Add-ons".
+  shop_products: { cols: ['id', 'name', 'description', 'category', 'price', 'compare_price', 'image_path', 'options', 'badge',
+                          'is_available', 'is_hidden', 'sort_order', 'created_at', 'updated_at'],
+                   num: ['price', 'compare_price', 'sort_order'], bool: ['is_available', 'is_hidden'], json: ['options'] },
+  // secret = the customer's private order-page link. items are priced by the server when the order is placed.
+  shop_orders:   { cols: ['id', 'order_no', 'secret', 'status', 'fulfilment', 'slot_date', 'slot_time', 'customer_name', 'phone', 'email',
+                          'address', 'notes', 'items', 'subtotal', 'delivery_fee', 'total', 'payment_method', 'payment_status',
+                          'receipt_path', 'history', 'internal_notes', 'created_at', 'updated_at'],
+                   num: ['subtotal', 'delivery_fee', 'total'], json: ['items', 'history'] },
 };
 
 const DEFAULTS = {
@@ -65,6 +75,8 @@ const DEFAULTS = {
   print_orders: { status: 'new', history: [] },
   print_staff:  { is_active: true, hub_access: false, status: 'approved' },
   push_subs:    {},
+  shop_products: { is_available: true, is_hidden: false, sort_order: 0, options: [] },
+  shop_orders:   { status: 'new', payment_status: 'unpaid', history: [] },
 };
 
 const INDEXES = [
@@ -77,6 +89,7 @@ const INDEXES = [
   'CREATE UNIQUE INDEX IF NOT EXISTS print_staff_login ON print_staff (login_name)',
   'CREATE UNIQUE INDEX IF NOT EXISTS print_staff_email ON print_staff (email)',
   'CREATE UNIQUE INDEX IF NOT EXISTS push_subs_endpoint ON push_subs (endpoint)',
+  'CREATE INDEX IF NOT EXISTS shop_orders_status ON shop_orders (status)',
 ];
 
 const SEED_SEASONS = [
@@ -85,7 +98,8 @@ const SEED_SEASONS = [
 
 // File keys in R2 start with one of these folders. previews/ holds the small copies of library photos
 // (thumb_path for the grid, preview_path for the details view) — originals are never changed.
-const FOLDERS = ['final/', 'raw/', 'brand/', 'creators/', 'print/', 'previews/'];
+// shop/ holds the webstore's product photos, logo and QR code (shop/images/) and payment receipts (shop/receipts/).
+const FOLDERS = ['final/', 'raw/', 'brand/', 'creators/', 'print/', 'previews/', 'shop/'];
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -165,6 +179,7 @@ async function route(req, ctx) {
   if (a === 'linkSubmit') return linkSubmit(req);
   if (a === 'linkSubmissions') return linkSubmissions(req.linkToken);
   if (a.startsWith('print')) return printRoute(req, ctx);
+  if (SHOP_PUBLIC[a]) return SHOP_PUBLIC[a](req, ctx);
 
   // ── Team only ──
   const me = await verify(req.token);
@@ -208,6 +223,18 @@ async function route(req, ctx) {
     case 'socmedConnect': ownersOnly('connect Buffer'); return socmedConnect(req);
     case 'socmedRemove': ownersOnly('connect Buffer'); return socmedRemove(String(req.id || ''));
     case 'socmedSaveChannels': ownersOnly('change Socmed Hub brands'); return socmedSaveChannels(req.channels);
+    // Webstore: everyone with Creative Hub access runs orders and the menu; owners change the store settings.
+    case 'shopAdmin': return shopAdmin(!me.viaLink);
+    case 'shopSaveSettings': ownersOnly('change the webstore settings'); return shopSaveSettings(req.settings || {});
+    case 'shopImageUpload': {
+      if (!/^image\//.test(String(req.mimeType || ''))) fail('Please choose a photo (JPG, PNG or WebP).');
+      return startUpload('shop/images/', req, 'team');
+    }
+    case 'shopSaveProduct': return shopSaveProduct(req.product || {});
+    case 'shopDeleteProduct': return shopDeleteProduct(String(req.id || ''));
+    case 'shopSortProducts': return shopSortProducts(req.ids);
+    case 'shopUpdateOrder': return shopUpdateOrder(me.name || me.email, String(req.id || ''), req.patch || {});
+    case 'shopDeleteOrder': return shopDeleteOrder(String(req.id || ''));
   }
   fail('Unknown action: ' + a);
 }
@@ -1986,4 +2013,388 @@ async function socmedSaveChannels(map) {
   }
   await setSetting('SOCMED', JSON.stringify(cfg));
   return socmedSetup();
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  WEBSTORE — customers order from shop/index.html (no login); the team runs it from the Creative Hub
+//
+//  Prices are always worked out here from the menu, never taken from the customer's browser.
+//  The same rules live in js/shop/model.js for the website (keep the two in step).
+// ════════════════════════════════════════════════════════════════════════════
+const SHOP_TZ = 'Asia/Kuala_Lumpur';
+const SHOP_STATUSES = ['new', 'preparing', 'ready', 'completed', 'cancelled'];
+const SHOP_PAYMENT = ['unpaid', 'submitted', 'paid'];
+const SHOP_METHODS = ['duitnow', 'bank', 'cash'];
+const SLOT_STEPS = [10, 15, 20, 30, 45, 60, 90, 120];
+const SHOP_MESSAGES = {
+  confirmed: 'Hi {name}! Thank you for ordering from {store}. Your order {order_no} ({total}) is confirmed for {when}. You can follow it here: {link}',
+  ready_pickup: 'Hi {name}! Your {store} order {order_no} is ready for pickup. See you soon!',
+  ready_delivery: 'Hi {name}! Your {store} order {order_no} is on its way to you. Enjoy!',
+};
+const SHOP_DEFAULTS = {
+  name: 'Noms', tagline: 'Freshly baked cookies, made in Sabah', about: '', logo_path: null, cover_path: null, accent: '#9c4a1f',
+  phone: '', instagram: '', address: '', open: true, closedMessage: "We're not taking orders right now — please check back soon!",
+  slotMinutes: 30, leadMinutes: 120, daysAhead: 14, receiptRequired: false,
+};
+
+function shopDefaults(s) {
+  s = s || {};
+  const day = { open: '10:00', close: '20:00', closed: false };
+  return {
+    ...SHOP_DEFAULTS, ...s,
+    hours: Array.from({ length: 7 }, (_, i) => ({ ...day, ...((s.hours || [])[i] || {}) })),
+    delivery: { enabled: true, fee: 8, freeOver: 0, minOrder: 0, note: '', ...(s.delivery || {}) },
+    pickup: { enabled: true, address: '', note: '', ...(s.pickup || {}) },
+    payments: {
+      duitnow: { enabled: true, qr_path: null, name: '', ...(s.payments?.duitnow || {}) },
+      bank: { enabled: false, bank: '', account_name: '', account_no: '', ...(s.payments?.bank || {}) },
+      cash: { enabled: true, ...(s.payments?.cash || {}) },
+    },
+    categories: Array.isArray(s.categories) ? s.categories : [],
+    messages: { ...SHOP_MESSAGES, ...(s.messages || {}) },
+  };
+}
+async function shopSettings() {
+  let s = null;
+  try { s = JSON.parse(await getSetting('SHOP_SETTINGS')); } catch { s = null; }
+  return shopDefaults(s);
+}
+
+// ── Money in sen, times in the store's time zone ──
+const toSen = (rm) => Math.round(Number(rm || 0) * 100);
+const fromSen = (sen) => Math.round(sen) / 100;
+const rmText = (rm) => 'RM ' + (toSen(rm) / 100).toFixed(2);
+const toMin = (hhmm) => { const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || '')); return m && +m[1] < 24 && +m[2] < 60 ? +m[1] * 60 + +m[2] : null; };
+const fromMin = (min) => `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
+const timeText = (min) => `${((Math.floor(min / 60) + 11) % 12) + 1}:${String(min % 60).padStart(2, '0')} ${min < 720 ? 'AM' : 'PM'}`;
+const ymdMs = (ymd) => { const [y, m, d] = ymd.split('-').map(Number); return Date.UTC(y, m - 1, d); };
+function storeNow(now = new Date()) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: SHOP_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(now).map((x) => [x.type, x.value]));
+  return { ymd: `${p.year}-${p.month}-${p.day}`, minutes: Number(p.hour) * 60 + Number(p.minute) };
+}
+function daySlots(s, ymd, now) {
+  const h = s.hours[(new Date(ymdMs(ymd)).getUTCDay() + 6) % 7];
+  const open = toMin(h && h.open), close = toMin(h && h.close);
+  if (!h || h.closed || open == null || close == null || close <= open) return [];
+  const t = storeNow(now);
+  const ahead = Math.round((ymdMs(ymd) - ymdMs(t.ymd)) / 86400e3);
+  if (ahead < 0 || ahead >= s.daysAhead) return [];
+  const step = Math.max(5, Number(s.slotMinutes) || 30);
+  const earliest = t.minutes + Math.max(0, Number(s.leadMinutes) || 0) - ahead * 1440;
+  const out = [];
+  for (let m = open; m + step <= close || (m === open && m < close); m += step) if (m >= earliest) out.push(m);
+  return out;
+}
+const whenText = (o) => `${new Date(ymdMs(o.slot_date)).toLocaleDateString('en-GB', { timeZone: 'UTC', weekday: 'short', day: 'numeric', month: 'short' })}, ${timeText(toMin(o.slot_time))}`;
+
+// One cart line priced against the menu (same as priceItem in js/shop/model.js).
+function priceItem(p, item) {
+  if (!p || p.is_hidden) return { ok: false, error: 'One of the items in your cart is no longer on the menu. Please remove it and try again.' };
+  if (!p.is_available) return { ok: false, error: `Sorry — ${p.name} is sold out. Please remove it from your cart.` };
+  const qty = Number(item.qty);
+  if (!Number.isInteger(qty) || qty < 1 || qty > 99) return { ok: false, error: 'Choose a quantity between 1 and 99.' };
+  let unit = toSen(p.price);
+  const options = [];
+  for (const g of p.options || []) {
+    const ids = [...new Set(((item.choices || {})[g.id] || []).map(String))];
+    const picked = (g.choices || []).filter((c) => ids.includes(c.id));
+    const max = Math.max(1, g.max || 1);
+    if (picked.length < (g.min || 0)) return { ok: false, error: `Please choose ${String(g.name).toLowerCase()} for ${p.name}.` };
+    if (picked.length > max) return { ok: false, error: `Choose up to ${max} for ${String(g.name).toLowerCase()} (${p.name}).` };
+    for (const c of picked) { unit += toSen(c.price); options.push({ group: g.name, choice: c.name, price: fromSen(toSen(c.price)) }); }
+  }
+  return { ok: true, unit: fromSen(unit), total: fromSen(unit * qty), options };
+}
+
+function shopTotals(lines, s, fulfilment) {
+  const sub = lines.reduce((n, l) => n + toSen(l.total), 0);
+  let fee = 0, short = 0;
+  if (fulfilment === 'delivery') {
+    fee = s.delivery.freeOver > 0 && sub >= toSen(s.delivery.freeOver) ? 0 : toSen(s.delivery.fee);
+    if (s.delivery.minOrder > 0 && sub < toSen(s.delivery.minOrder)) short = toSen(s.delivery.minOrder) - sub;
+  }
+  return { subtotal: fromSen(sub), delivery_fee: fromSen(fee), total: fromSen(sub + fee), short: fromSen(short) };
+}
+
+// ── Customers (no login) ──
+const SHOP_PUBLIC = {
+  shopInfo: async () => {
+    const s = await shopSettings();
+    delete s.messages; // the team's WhatsApp templates
+    const products = (await readTable('shop_products', 'WHERE is_hidden IS NULL OR is_hidden = 0')).sort(bySortOrder);
+    return { settings: s, products };
+  },
+  shopReceiptUpload: async (req) => {
+    const g = await guard('SHOP_UP:' + req._ip, 30, 'Too many uploads from this connection. Please wait a few minutes and try again.');
+    const mime = String(req.mimeType || '');
+    if (!/^image\//.test(mime) && mime !== 'application/pdf') fail('Please attach a screenshot or photo of your receipt (or a PDF).');
+    if (Number(req.size) > 10e6) fail('That file is too big — please attach a screenshot under 10 MB.');
+    await g.count();
+    return startUpload('shop/receipts/', req, 'customer');
+  },
+  shopPlaceOrder: (req, ctx) => shopPlaceOrder(req, ctx),
+  shopOrder: async (req) => publicShopOrder(await shopOrderFor(req.ref)),
+  shopAttachReceipt: async (req) => {
+    const o = await shopOrderFor(req.ref);
+    if (o.payment_method === 'cash') fail('This order is paid at pickup / on delivery.');
+    if (o.payment_status === 'paid') fail('This order is already paid. Thank you!');
+    const key = await checkReceipt(req.receipt);
+    if (o.receipt_path && o.receipt_path !== key) await removeFiles([o.receipt_path]);
+    const history = (o.history || []).concat([{ event: 'receipt', at: nowIso(), by: 'customer' }]);
+    return publicShopOrder(await updateRow('shop_orders', o.id, { receipt_path: key, payment_status: 'submitted', history }));
+  },
+};
+
+const bySortOrder = (a, b) => (a.sort_order || 0) - (b.sort_order || 0) || String(a.created_at).localeCompare(String(b.created_at));
+
+// "<order id>.<secret>" from the customer's order-page link.
+async function shopOrderFor(ref) {
+  const [id, secret] = String(ref || '').split('.');
+  const o = id && secret ? await getRow('shop_orders', id) : null;
+  if (!o || !sameText(secret, o.secret || '')) fail("We couldn't find that order. Please check the link, or contact us.", 'NOT_FOUND');
+  return o;
+}
+
+// What a customer sees about their own order (no team notes).
+function publicShopOrder(o) {
+  const times = {};
+  for (const h of o.history || []) if (h.status) times[h.status] = h.at;
+  const out = {};
+  for (const c of ['id', 'secret', 'order_no', 'status', 'fulfilment', 'slot_date', 'slot_time', 'customer_name', 'phone', 'email', 'address',
+    'notes', 'items', 'subtotal', 'delivery_fee', 'total', 'payment_method', 'payment_status', 'created_at']) out[c] = o[c];
+  out.has_receipt = !!o.receipt_path;
+  out.times = times;
+  return out;
+}
+
+async function checkReceipt(key) {
+  key = String(key || '');
+  if (!key.startsWith('shop/receipts/') || !knownKey(key)) fail('Please attach your receipt again.');
+  const head = await FILES.head(key);
+  if (!head) fail("Your receipt didn't finish uploading. Please attach it again.");
+  const type = String(head.httpMetadata?.contentType || '');
+  if (!type.startsWith('image/') && type !== 'application/pdf') fail('Please attach a screenshot or photo of your receipt (or a PDF).');
+  if (await DB.prepare('SELECT 1 FROM shop_orders WHERE receipt_path = ?').bind(key).first()) fail('Please attach your receipt again.');
+  return key;
+}
+
+const cleanText = (v, max) => String(v == null ? '' : v).trim().slice(0, max);
+
+async function shopPlaceOrder(req, ctx) {
+  const g = await guard('SHOP_ORDER:' + req._ip, 20, 'Too many orders from this connection. Please wait a few minutes and try again.');
+  const s = await shopSettings();
+  if (!s.open) fail(s.closedMessage || "We're not taking orders right now.", 'SHOP_CLOSED');
+  const fulfilment = req.fulfilment === 'delivery' ? 'delivery' : 'pickup';
+  if (!s[fulfilment].enabled) fail(fulfilment === 'delivery' ? "Sorry, we're not delivering right now — please choose pickup." : "Sorry, pickup isn't available right now — please choose delivery.");
+
+  // When: one of the times the store offers (with 30 minutes' grace for a slow checkout).
+  const date = String(req.slot_date || ''), time = toMin(req.slot_time);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || time == null) fail(`Please choose a ${fulfilment} time.`, 'SLOT');
+  if (!daySlots(s, date, new Date(Date.now() - 30 * 60e3)).includes(time)) fail('That time is no longer available. Please choose another time.', 'SLOT');
+
+  // Who
+  const name = cleanText(req.customer_name, 80);
+  const phone = cleanText(req.phone, 40);
+  const email = cleanText(req.email, 120).toLowerCase();
+  const address = fulfilment === 'delivery' ? cleanText(req.address, 500) : '';
+  if (!name) fail('Please enter your name.');
+  if (phone.replace(/\D/g, '').length < 8) fail('Please enter your phone number, so we can reach you about your order.');
+  if (email && !/^\S+@\S+\.\S+$/.test(email)) fail("That email doesn't look right.");
+  if (fulfilment === 'delivery' && address.length < 8) fail('Please enter your full delivery address.');
+
+  // What: priced from the menu.
+  const items = Array.isArray(req.items) ? req.items.slice(0, 50) : [];
+  if (!items.length) fail('Your cart is empty.');
+  const menu = new Map((await readTable('shop_products')).map((p) => [p.id, p]));
+  const lines = items.map((it) => {
+    const p = menu.get(String(it.product_id || ''));
+    const r = priceItem(p, it || {});
+    if (!r.ok) fail(r.error, 'CART');
+    return { product_id: p.id, name: p.name, qty: Number(it.qty), unit_price: r.unit, total: r.total, options: r.options, note: cleanText(it.note, 300) || null };
+  });
+  const totals = shopTotals(lines, s, fulfilment);
+  if (totals.short > 0) fail(`The minimum order for delivery is ${rmText(s.delivery.minOrder)} — add ${rmText(totals.short)} more.`, 'MIN');
+  if (req.expectedTotal != null && toSen(req.expectedTotal) !== toSen(totals.total)) {
+    fail(`Some prices have changed — your total is now ${rmText(totals.total)}. Please check your cart and place the order again.`, 'PRICE_CHANGED');
+  }
+
+  // How they pay
+  const method = SHOP_METHODS.includes(req.payment_method) ? req.payment_method : null;
+  if (!method || !s.payments[method].enabled) fail("Please choose how you'll pay.");
+  const receipt = req.receipt && method !== 'cash' ? await checkReceipt(req.receipt) : null;
+  if (s.receiptRequired && method !== 'cash' && !receipt) fail('Please attach your payment receipt.', 'RECEIPT');
+
+  await g.count();
+  // Order numbers count up from W-1001 — done in one statement so two orders never get the same number.
+  const n = await DB.prepare(`INSERT INTO settings (key, value) VALUES ('SHOP_NEXT_NO', '1001')
+    ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1 RETURNING value`).first();
+  const o = await insertRow('shop_orders', {
+    order_no: 'W-' + n.value, secret: newKey().slice(0, 24), status: 'new', fulfilment, slot_date: date, slot_time: fromMin(time),
+    customer_name: name, phone, email: email || null, address: address || null, notes: cleanText(req.notes, 1000) || null,
+    items: lines, subtotal: totals.subtotal, delivery_fee: totals.delivery_fee, total: totals.total,
+    payment_method: method, payment_status: receipt ? 'submitted' : 'unpaid', receipt_path: receipt,
+    history: [{ status: 'new', at: nowIso(), by: 'customer' }],
+  });
+  ctx.waitUntil(pushShopOrder(o).catch((e) => console.error(e)));
+  return publicShopOrder(o);
+}
+
+// New-order alert on the team's phones: owners, and team members who have the Creative Hub.
+async function pushShopOrder(o) {
+  const staff = new Map((await readTable('print_staff')).map((x) => [x.id, x]));
+  const subs = (await allowedSubs()).filter((x) => x.access !== 'staff' || (staff.get(x.ref) && staff.get(x.ref).hub_access));
+  if (!subs.length) return;
+  const count = o.items.reduce((t, i) => t + i.qty, 0);
+  const data = { title: `New webstore order ${o.order_no}`, tag: o.id, at: Date.now(), url: '../index.html#/shop/order/' + o.id,
+    body: `${o.customer_name} — ${count} item${count === 1 ? '' : 's'}, ${rmText(o.total)} · ${o.fulfilment === 'delivery' ? 'Delivery' : 'Pickup'} ${whenText(o)}` };
+  await Promise.all(subs.map((sub) => sendPush(sub, data)));
+}
+
+// ── The team (Creative Hub) ──
+async function shopAdmin(owner) {
+  const since = new Date(Date.now() - 120 * 86400e3).toISOString(); // open orders, plus everything from the last 4 months
+  const orders = await readTable('shop_orders', "WHERE status IN ('new', 'preparing', 'ready') OR created_at >= ?", since);
+  return { settings: await shopSettings(), products: (await readTable('shop_products')).sort(bySortOrder), orders: orders.reverse(), owner };
+}
+
+async function checkShopImage(key, what) {
+  if (key == null || key === '') return null;
+  await checkCover(key, ['shop/images/'], what);
+  return String(key);
+}
+const money = (v, what, { min = 0, max = 100000 } = {}) => {
+  const n = Number(v === '' || v == null ? 0 : v);
+  if (!Number.isFinite(n) || n < min || n > max) fail(`Enter a price for ${what} (RM ${min}–${max}).`);
+  return fromSen(toSen(n));
+};
+const shopId = (v) => (/^[\w-]{1,40}$/.test(String(v || '')) ? String(v) : uuid().slice(0, 8));
+
+async function shopSaveSettings(input) {
+  const cur = await shopSettings();
+  const s = shopDefaults({ ...cur, ...input });
+  const out = {
+    name: cleanText(s.name, 80), tagline: cleanText(s.tagline, 160), about: cleanText(s.about, 2000),
+    logo_path: await checkShopImage(s.logo_path, 'logo'), cover_path: await checkShopImage(s.cover_path, 'cover photo'),
+    accent: String(s.accent || SHOP_DEFAULTS.accent), phone: cleanText(s.phone, 40),
+    instagram: cleanText(s.instagram, 100).replace(/^@/, '').replace(/^https?:\/\/(www\.)?instagram\.com\//i, '').replace(/[/?#].*$/, ''),
+    address: cleanText(s.address, 300), open: !!s.open, closedMessage: cleanText(s.closedMessage, 300) || SHOP_DEFAULTS.closedMessage,
+    hours: s.hours.map((h, i) => {
+      const o = toMin(h.open), c = toMin(h.close);
+      if (!h.closed && (o == null || c == null || c <= o)) fail(`Check the opening hours for ${['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][i]} — closing must be after opening.`);
+      return { open: fromMin(o ?? 600), close: fromMin(c ?? 1200), closed: !!h.closed };
+    }),
+    slotMinutes: SLOT_STEPS.includes(Number(s.slotMinutes)) ? Number(s.slotMinutes) : 30,
+    leadMinutes: Math.min(14 * 1440, Math.max(0, Math.round(Number(s.leadMinutes) || 0))),
+    daysAhead: Math.min(90, Math.max(1, Math.round(Number(s.daysAhead) || 14))),
+    delivery: { enabled: !!s.delivery.enabled, fee: money(s.delivery.fee, 'the delivery fee', { max: 1000 }),
+      freeOver: money(s.delivery.freeOver, 'free delivery'), minOrder: money(s.delivery.minOrder, 'the minimum order'), note: cleanText(s.delivery.note, 300) },
+    pickup: { enabled: !!s.pickup.enabled, address: cleanText(s.pickup.address, 300), note: cleanText(s.pickup.note, 300) },
+    payments: {
+      duitnow: { enabled: !!s.payments.duitnow.enabled, qr_path: await checkShopImage(s.payments.duitnow.qr_path, 'DuitNow QR code'), name: cleanText(s.payments.duitnow.name, 100) },
+      bank: { enabled: !!s.payments.bank.enabled, bank: cleanText(s.payments.bank.bank, 80), account_name: cleanText(s.payments.bank.account_name, 100),
+        account_no: cleanText(s.payments.bank.account_no, 40) },
+      cash: { enabled: !!s.payments.cash.enabled },
+    },
+    receiptRequired: !!s.receiptRequired,
+    categories: [...new Set((Array.isArray(s.categories) ? s.categories : []).map((c) => cleanText(c, 60)).filter(Boolean))].slice(0, 50),
+    messages: Object.fromEntries(Object.keys(SHOP_MESSAGES).map((k) => [k, cleanText(s.messages[k], 1000) || SHOP_MESSAGES[k]])),
+  };
+  checkColour(out.accent);
+  if (!out.name) fail('Give your store a name.');
+  if (!out.delivery.enabled && !out.pickup.enabled) fail('Turn on delivery, pickup, or both.');
+  if (!SHOP_METHODS.some((m) => out.payments[m].enabled)) fail('Turn on at least one way to pay.');
+  if (out.payments.bank.enabled && !out.payments.bank.account_no) fail('Add your bank account number, or turn bank transfer off.');
+  // Replaced photos are deleted from storage.
+  const old = [cur.logo_path, cur.cover_path, cur.payments.duitnow.qr_path].filter((k) => k && ![out.logo_path, out.cover_path, out.payments.duitnow.qr_path].includes(k));
+  await setSetting('SHOP_SETTINGS', JSON.stringify(out));
+  if (old.length) await removeFiles(old);
+  return shopDefaults(out);
+}
+
+function cleanOptions(groups) {
+  if (!Array.isArray(groups)) return [];
+  return groups.slice(0, 20).map((g) => {
+    const name = cleanText(g && g.name, 60);
+    if (!name) fail('Every option group needs a name (e.g. “Box size”).');
+    const seen = new Set();
+    const choices = (Array.isArray(g.choices) ? g.choices : []).slice(0, 50).map((c) => {
+      const cname = cleanText(c && c.name, 80);
+      if (!cname) fail(`Every choice in “${name}” needs a name.`);
+      let id = shopId(c.id);
+      while (seen.has(id)) id = uuid().slice(0, 8);
+      seen.add(id);
+      return { id, name: cname, price: money(c.price, `“${cname}”`, { min: -1000, max: 10000 }) };
+    });
+    if (!choices.length) fail(`Add at least one choice to “${name}”.`);
+    const max = Math.min(choices.length, Math.max(1, Math.round(Number(g.max) || 1)));
+    return { id: shopId(g.id), name, min: Math.min(max, Math.max(0, Math.round(Number(g.min) || 0))), max, choices };
+  });
+}
+
+async function shopSaveProduct(input) {
+  const name = cleanText(input.name, 120);
+  if (!name) fail('Give the product a name.');
+  const price = money(input.price, name);
+  const compare = input.compare_price === '' || input.compare_price == null ? null : money(input.compare_price, 'the original price');
+  const row = {
+    name, description: cleanText(input.description, 2000) || null, category: cleanText(input.category, 60) || null, price,
+    compare_price: compare && compare > price ? compare : null, image_path: await checkShopImage(input.image_path, 'product photo'),
+    options: cleanOptions(input.options), badge: cleanText(input.badge, 30) || null,
+    is_available: input.is_available !== false, is_hidden: !!input.is_hidden,
+  };
+  if (input.id) {
+    const cur = await getRow('shop_products', String(input.id));
+    if (!cur) fail('That product no longer exists.');
+    const saved = await updateRow('shop_products', cur.id, row);
+    if (cur.image_path && cur.image_path !== saved.image_path) await removeFiles([cur.image_path]);
+    return saved;
+  }
+  if ((await count('shop_products')) >= 1000) fail('You can have up to 1,000 products.');
+  const last = await DB.prepare('SELECT MAX(sort_order) AS n FROM shop_products').first();
+  return insertRow('shop_products', { ...row, sort_order: (Number(last && last.n) || 0) + 1 });
+}
+
+async function shopDeleteProduct(id) {
+  const p = await getRow('shop_products', id);
+  if (!p) return true;
+  if (p.image_path) await removeFiles([p.image_path]);
+  await deleteRows('shop_products', [id]);
+  return true;
+}
+
+async function shopSortProducts(ids) {
+  ids = (Array.isArray(ids) ? ids : []).map(String).slice(0, 1000);
+  for (let i = 0; i < ids.length; i += 50) {
+    await DB.batch(ids.slice(i, i + 50).map((id, j) => DB.prepare('UPDATE shop_products SET sort_order = ? WHERE id = ?').bind(i + j + 1, id)));
+  }
+  return (await readTable('shop_products')).sort(bySortOrder);
+}
+
+async function shopUpdateOrder(who, id, patch) {
+  const o = await getRow('shop_orders', id);
+  if (!o) fail('That order no longer exists.');
+  const p = {}, history = [...(o.history || [])], at = nowIso();
+  if (patch.status && patch.status !== o.status) {
+    if (!SHOP_STATUSES.includes(patch.status)) fail('Unknown status.');
+    p.status = patch.status;
+    history.push({ status: patch.status, at, by: who });
+  }
+  if (patch.payment_status && patch.payment_status !== o.payment_status) {
+    if (!SHOP_PAYMENT.includes(patch.payment_status)) fail('Unknown payment status.');
+    p.payment_status = patch.payment_status;
+    history.push({ event: 'payment', payment: patch.payment_status, at, by: who });
+  }
+  if (patch.whatsapp) history.push({ event: 'whatsapp', kind: cleanText(patch.whatsapp, 30), at, by: who });
+  if (patch.internal_notes !== undefined) p.internal_notes = cleanText(patch.internal_notes, 20000) || null;
+  if (history.length !== (o.history || []).length) p.history = history;
+  return updateRow('shop_orders', id, p);
+}
+
+async function shopDeleteOrder(id) {
+  const o = await getRow('shop_orders', id);
+  if (!o) return true;
+  if (o.receipt_path) await removeFiles([o.receipt_path]);
+  await deleteRows('shop_orders', [id]);
+  return true;
 }

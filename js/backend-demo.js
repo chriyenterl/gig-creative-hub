@@ -4,6 +4,7 @@
 import { uid, newToken, today, fmtGB } from './util.js';
 import { DEFAULT_QUESTIONS, DEFAULT_READY_MESSAGE, DEFAULT_NEW_MESSAGE, notifyPayload, isVisible, isBlank, normalizeLink,
   finishingFor, makeSteps, applyStep, stepsForStatus } from './print/model.js';
+import { demoShop } from './shop/demo-backend.js';
 
 const KEY = 'mediahub-demo-v1';
 const USER = { email: 'you@demo.team' };
@@ -527,6 +528,7 @@ export function createDemoBackend() {
     },
 
     socmed: demoSocmed(),
+    shop: demoShop(idb),
 
     print: (() => {
       let pdb = null;
@@ -875,6 +877,7 @@ export function createDemoBackend() {
     // Demo-only: wipe everything and start again with sample data.
     async resetDemo() {
       try { localStorage.removeItem(KEY); localStorage.removeItem(PRINT_KEY); localStorage.removeItem(LIMIT_KEY); localStorage.removeItem(SOCMED_KEY); } catch {}
+      backend.shop.resetDemo();
       await idb.clear().catch(() => {});
       db = seed();
       save();

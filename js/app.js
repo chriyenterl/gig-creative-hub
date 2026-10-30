@@ -16,6 +16,7 @@ import { Settings } from './views/settings.js';
 import { Access } from './views/access.js';
 import { Socmed } from './views/socmed.js';
 import { AssetDetail } from './views/asset-detail.js';
+import { Shop } from './views/shop.js';
 
 setApi(await loadBackend());
 
@@ -43,13 +44,18 @@ const NAV = [
     { id: 'talents', label: 'Talents' },
     { id: 'links', label: 'Upload links' },
   ] },
+  { group: 'shop', label: 'Webstore', icon: 'bag', items: [
+    { id: 'shop', sub: 'orders', label: 'Orders', badge: 'shopNew' },
+    { id: 'shop', sub: 'products', label: 'Products' },
+    { id: 'shop', sub: 'settings', label: 'Store settings', ownersOnly: true },
+  ] },
   { group: 'access', label: 'Links & access', icon: 'key', ownersOnly: true, items: [
     { id: 'access', label: 'Team', badge: 'teamWaiting' },
     { id: 'access', sub: 'customers', label: 'Customers' },
     { id: 'access', sub: 'master', label: 'Master controls' },
   ] },
 ];
-const PAGE_LABELS = { library: 'Library', seasons: 'Seasons', talents: 'Talents', links: 'Upload links', access: 'Links & access', settings: 'Settings', socmed: 'Socmed Hub' };
+const PAGE_LABELS = { library: 'Library', seasons: 'Seasons', talents: 'Talents', links: 'Upload links', access: 'Links & access', settings: 'Settings', socmed: 'Socmed Hub', shop: 'Webstore' };
 
 // Which sidebar groups are unfolded (remembered in this browser).
 const GROUPS_KEY = 'gig-nav-groups';
@@ -80,6 +86,10 @@ function Shell() {
     if (!owner || !api.print) return;
     api.print.me(null).then((me) => setState({ teamWaiting: (me.staff || []).filter((x) => x.status === 'pending').length })).catch(() => {});
   }, [owner]);
+  // How many webstore orders are waiting in New (badge on Webstore → Orders).
+  useEffect(() => {
+    if (api.shop) api.shop.admin().then((d) => setState({ shopNew: d.orders.filter((o) => o.status === 'new').length })).catch(() => {});
+  }, []);
   const pages = {
     dashboard: () => html`<${Dashboard} />`,
     review: () => html`<${Review} query=${route.query} />`,
@@ -90,6 +100,7 @@ function Shell() {
     settings: () => html`<${Settings} />`,
     access: () => (s.user?.viaLink ? html`<${Dashboard} />` : html`<${Access} sub=${p1} />`),
     socmed: () => html`<${Socmed} sub=${p1} query=${route.query} />`,
+    shop: () => html`<${Shop} sub=${p1} id=${route.parts[2]} query=${route.query} />`,
   };
   const page = (pages[p0] || pages.dashboard)();
   const pageLabel = PAGE_LABELS[p0] || NAV.find((n) => n.id === p0)?.label || 'Dashboard';
@@ -97,7 +108,8 @@ function Shell() {
 
   const isActive = (n) => n.id === p0 && (n.id === 'library'
     ? (n.cat || '') === (route.query.cat || '') && (n.type || '') === (route.query.type || '')
-    : n.id === 'access' ? (n.sub || '') === (p1 || '') : true);
+    : n.id === 'access' ? (n.sub || '') === (p1 || '')
+    : n.id === 'shop' ? n.sub === (p1 === 'order' || !p1 ? 'orders' : p1) : true);
   const groupHasPage = (g) => g.items.some((n) => n.id === p0);
   const [groups, setGroups] = useState(readGroups);
   const toggleGroup = (key) => setGroups((g) => { const next = { ...g, [key]: !isOpen(key) }; saveGroups(next); return next; });
@@ -129,7 +141,7 @@ function Shell() {
             </button>
             <div class="nav-group-body" id=${'nav-' + n.group}>
               <div class="nav-group-inner">
-                ${n.items.map((c) => html`<${NavLink} key=${c.label} n=${c} sub active=${isActive(c)} badge=${badgeOf(c)} />`)}
+                ${n.items.filter((c) => owner || !c.ownersOnly).map((c) => html`<${NavLink} key=${c.label} n=${c} sub active=${isActive(c)} badge=${badgeOf(c)} />`)}
               </div>
             </div>
           </div>`;
@@ -137,6 +149,7 @@ function Shell() {
         <div class="nav-divider"></div>
         <span class="nav-label">Hubs</span>
         <a class="nav-item" href="print/index.html"><${Icon} name="printer" /><span>Print Hub</span><span class="nav-ext"><${Icon} name="external" size=${14} /></span></a>
+        <a class="nav-item" href="shop/" target="_blank" rel="noopener"><${Icon} name="store" /><span>Online store</span><span class="nav-ext"><${Icon} name="external" size=${14} /></span></a>
         <a href=${hrefFor('socmed')} class=${'nav-item' + (p0 === 'socmed' ? ' active' : '')} aria-current=${p0 === 'socmed' ? 'page' : undefined}>
           <${Icon} name="megaphone" /><span>Socmed Hub</span></a>
       </nav>

@@ -231,6 +231,24 @@ export function createCloudflareBackend(cfg, { portal = false } = {}) {
       },
     },
 
+    // ── Webstore: customers order on shop/index.html (no login); the team runs it from the Creative Hub ──
+    shop: {
+      info() { return call('shopInfo'); },
+      uploadReceipt(file, { onProgress } = {}) { return sendFile('shopReceiptUpload', {}, file, onProgress); },
+      placeOrder(order) { return call('shopPlaceOrder', order); },
+      order(ref) { return call('shopOrder', { ref }); },
+      attachReceipt(ref, receipt) { return call('shopAttachReceipt', { ref, receipt }); },
+      admin() { return call('shopAdmin'); },
+      saveSettings(settings) { return call('shopSaveSettings', { settings }); },
+      uploadImage(file, { onProgress } = {}) { return sendFile('shopImageUpload', {}, file, onProgress); },
+      saveProduct(product) { return call('shopSaveProduct', { product }); },
+      deleteProduct(id) { return call('shopDeleteProduct', { id }); },
+      sortProducts(ids) { return call('shopSortProducts', { ids }); },
+      updateOrder(id, patch) { return call('shopUpdateOrder', { id, patch }); },
+      deleteOrder(id) { return call('shopDeleteOrder', { id }); },
+      async fileUrls(keys) { return Object.fromEntries(keys.filter(Boolean).map((k) => [k, fileUrl(k)])); },
+    },
+
     portal: {
       linkInfo(linkToken) { return call('linkInfo', { linkToken }); },
       submit(linkToken, m) {
